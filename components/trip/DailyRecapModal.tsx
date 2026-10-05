@@ -34,7 +34,8 @@ export const DailyRecapModal: React.FC<DailyRecapModalProps> = ({ open, onClose 
 
       if (user) {
         await recapService.saveDailyRecap(user.id, facts, recap);
-        await claimReward('daily_itinerary', `recap:${date}`);
+        // Server derives the daily reference from its own date — no client reference sent.
+        await claimReward('daily_itinerary');
       }
 
       if (activeTrip && recap.passportItem && !activeTrip.passportEntry) {

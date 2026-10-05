@@ -193,6 +193,9 @@ export interface Stamp {
   placeName: string;
   date: string;
   city?: string;
+  /** Claimed coordinates for server-side soft-geofence check (optional for legacy rows). */
+  lat?: number;
+  lng?: number;
 }
 
 export interface DailyRecap {

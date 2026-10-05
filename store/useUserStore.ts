@@ -46,7 +46,7 @@ interface CleanUserState extends Omit<
   hasActiveTrip: () => boolean;
   fetchFuelHistory: () => Promise<void>;
   setActiveTripLocal: (trip: Trip | null) => void;
-  claimReward: (type: RewardEventType, referenceId?: string, transactionId?: string) => Promise<void>;
+  claimReward: (type: RewardEventType, transactionId?: string) => Promise<void>;
   recordStreak: () => Promise<void>;
   updateTripBudget: (patch: {
     totalBudget?: number;
@@ -227,7 +227,9 @@ export const useUserStore = create<CleanUserState>()(
         });
       },
 
-      claimReward: async (type: RewardEventType, referenceId?: string, transactionId?: string) => {
+      claimReward: async (type: RewardEventType, transactionId?: string) => {
+        // Server derives entitlement (reference/amounts) from the reward type only.
+        // transactionId is purely a transport idempotency key for retried outbox delivery.
         const txId = transactionId ?? crypto.randomUUID();
         const optimistic: Record<string, { fuel: number; xp: number }> = {
           stamp: { fuel: 0.1, xp: 50 },
@@ -250,7 +252,6 @@ export const useUserStore = create<CleanUserState>()(
           payload: {
             px_transaction_id: txId,
             px_reward_type: type,
-            px_reference_id: referenceId ?? null,
           },
         });
       },
@@ -356,6 +357,8 @@ export const useUserStore = create<CleanUserState>()(
             px_place_id: stamp.placeId,
             px_place_name: stamp.placeName,
             px_city: cityMode || 'Unknown',
+            px_lat: stamp.lat ?? null,
+            px_lng: stamp.lng ?? null,
           },
         });
 
@@ -678,8 +681,8 @@ export const useUserStore = create<CleanUserState>()(
           });
         }
 
-        // Reward via ledger RPC (idempotent) — not a direct XP mutate
-        await get().claimReward('daily_itinerary', id);
+        // Reward via ledger RPC (idempotent, server-derived daily entitlement).
+        await get().claimReward('daily_itinerary');
 
         AudioGraph.getInstance().playCoinSound();
       },

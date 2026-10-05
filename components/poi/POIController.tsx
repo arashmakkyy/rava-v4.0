@@ -118,6 +118,8 @@ export const POIController: React.FC = () => {
           placeId: poiId,
           placeName: poiName,
           date: formatJalaliShort(new Date()),
+          lat: poiLat,
+          lng: poiLng,
         });
         setCelebratingStamp(true);
       } catch (err) {

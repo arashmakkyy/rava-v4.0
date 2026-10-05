@@ -88,12 +88,12 @@ class SyncManagerProvider {
                 const { error: tripError } = await supabase.from('trips').insert(trip);
                 if (tripError) throw tripError;
               }
-              // Profile-complete reward — only when outbound payload carries a stable tx id
+              // Profile-complete reward — server derives entitlement (onboarding flag);
+              // only when outbound payload carries a stable tx id.
               if (profile?.id && action.payload.profile_reward_tx) {
                 await supabase.rpc('claim_reward', {
                   px_transaction_id: action.payload.profile_reward_tx,
                   px_reward_type: 'profile_complete',
-                  px_reference_id: profile.id,
                 });
               }
               success = true;
