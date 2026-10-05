@@ -17,7 +17,29 @@ supabase/migrations/20240806000005_budget_gamification.sql
 supabase/migrations/20240806000006_journey_logic.sql
 supabase/migrations/20240806000007_production_hardening.sql
 supabase/migrations/20240806000008_production_hotfix.sql
+supabase/migrations/20240806000009_smoke_hotfixes.sql
 ```
+
+### 1b. Supabase migrations — WRITTEN, PENDING APPLY (needs `SUPABASE_ACCESS_TOKEN`)
+
+```
+supabase/migrations/20240806000010_economy_lockdown.sql      (P0.1: mint-RPC revoke,
+  wallet column protection, server-derived reward entitlement, soft geofence)
+supabase/migrations/20240806000011_price_verification.sql   (P0.3: admin_increment_wallet
+  definition, atomic finalize_price_verification, entitlement guard)
+supabase/migrations/20240806000012_places_identity.sql      (B2: google_place_id column)
+supabase/migrations/20240806000013_ai_usage_quota.sql       (P0.4: ai_usage + quota RPCs)
+```
+
+Apply forward-only, in order (09 already live is untouched):
+
+```
+SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
+```
+
+> `apply_migrations.mjs` is a MANUAL RUNNER, not a migration system: it re-executes
+> whole files and tracks no history. Source of truth is the Supabase migration
+> history. All new schema changes must be forward-only migrations.
 
 Re-apply (idempotent) if needed:
 
@@ -25,7 +47,13 @@ Re-apply (idempotent) if needed:
 SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
 ```
 
-Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`). Frontend must keep the **anon** key only.
+Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`, `mint-live-token`, `ai-complete`). Frontend keeps the **anon** key only — no Gemini credential is bundled anymore (Live uses ephemeral tokens, other AI calls use the `ai-complete` proxy).
+
+New/changed Edge Functions to deploy from repo:
+- `mint-live-token` (needs secrets: `GEMINI_API_KEY`, plus `SUPABASE_URL` + `SUPABASE_ANON_KEY` for user JWT quota checks)
+- `ai-complete` (same secrets as above)
+- `verify-price` (rewritten trust model: needs NEW secret `VERIFY_PRICE_WEBHOOK_SECRET`, mirrored as `x-webhook-secret` header on the Database Webhook for `price_reports` INSERT)
+- `process-ticket` (redeploy: ownership check)
 
 **Verified remote state**
 - Istanbul curated POIs: 31 · Dubai: 28
@@ -42,17 +70,18 @@ Confirm Edge Functions still use the **service role** key only on the server (`p
 
 ### 2. Environment
 
-- Google Maps JS API key (Places + Maps + Directions)
-- Gemini API key for Live audio
+- Google Maps JS API key (Places + Maps + Routes library)
+- NO client Gemini key (removed; see `mint-live-token` / `ai-complete` above)
 - Supabase URL + anon key
 - Auth redirect / callback URLs for magic links and password recovery
 
 ### 3. Places data
 
-Seed migration ships curated POIs for Istanbul and Dubai (≥20 each; remote now 31 / 28 including prior rows). Optional refresh with real Place IDs:
+Seed migration ships curated POIs for Istanbul and Dubai (≥20 each; remote now 31 / 28 including prior rows). Refresh with real Place IDs (fills `google_place_id`, never renames PKs or Persian copy):
 
 ```
-npm run fetch:places
+node scripts/fetch_places.mjs --city Istanbul            # dry-run first
+node scripts/fetch_places.mjs --city Istanbul --apply    # needs GOOGLE_PLACES_API_KEY + service key
 ```
 
 (Server-only Google Places key — never ship in the browser.)
