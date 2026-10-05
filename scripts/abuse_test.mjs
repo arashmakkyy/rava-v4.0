@@ -327,6 +327,63 @@ async function main() {
       record('A15: user JWT cannot trigger the-dreamer', !!blocked, `status=${res.status}`);
     }
 
+    // A16: profile id/wallet/xp cannot be PATCHed directly (allowlist).
+    {
+      const { res } = await rest(`/rest/v1/profiles?id=eq.${A.id}`, {
+        method: 'PATCH',
+        token: A.token,
+        body: { id: B.id, wallet_balance: 1, xp_level: 1 },
+      });
+      const after = await profileOf(A.token);
+      record('A16: id/wallet/xp direct PATCH denied', !res.ok, `status=${res.status} balance=${after?.wallet_balance}`);
+    }
+
+    // A17: concurrent claim_price_attempt on one report → exactly one allowed.
+    {
+      const { json: cacheRows } = await rest('/rest/v1/places_cache?select=place_id&limit=1', { token: SERVICE });
+      const cacheId = Array.isArray(cacheRows) ? cacheRows[0]?.place_id : null;
+      const { json: created } = await rest('/rest/v1/price_reports', {
+        method: 'POST', token: A.token, prefer: 'return=representation',
+        body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: `race ${stamp}`, reported_price: 1, currency: 'TRY', proof_image_url: `${A.id}/race.jpg`, ai_verification_status: 'pending' },
+      });
+      const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
+      if (!reportId) {
+        record('A17: concurrent claim allows exactly one', false, 'could not seed price report');
+      } else {
+        const call = () => rest('/rest/v1/rpc/claim_price_attempt', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_max_attempts_per_day: 10 },
+        });
+        const [r1, r2] = await Promise.all([call(), call()]);
+        const oks = [r1.json?.ok === true, r2.json?.ok === true].filter(Boolean).length;
+        record('A17: concurrent claim allows exactly one', oks === 1, `r1=${JSON.stringify(r1.json)} r2=${JSON.stringify(r2.json)}`);
+      }
+    }
+
+    // A18: parallel live-lease mints never exceed the real balance.
+    {
+      // Drain A to ~0.1h first (deduct is the honest client path).
+      const start = await profileOf(A.token);
+      const drain = Math.max(0, (Number(start?.wallet_balance) || 0) * 3600 - 360);
+      if (drain > 0) {
+        await rpc('deduct_fuel', { px_seconds: drain, px_reason: 'abuse setup', px_transaction_id: randomUUID() }, A.token);
+      }
+      const before = await profileOf(A.token);
+      const mint = () => rest('/rest/v1/rpc/acquire_live_lease', {
+        method: 'POST', token: A.token,
+        body: { px_max_minutes: 15, px_max_mints_per_day: 10 },
+      });
+      const [m1, m2] = await Promise.all([mint(), mint()]);
+      const okCount = [m1.json?.ok === true, m2.json?.ok === true].filter(Boolean).length;
+      const after = await profileOf(A.token);
+      const mins = [m1.json?.minutes || 0, m2.json?.minutes || 0];
+      const grantedValue = (mins[0] + mins[1]) / 60;
+      const spent = Number(before?.wallet_balance || 0) - Number(after?.wallet_balance || 0);
+      // At most one full lease from dust; never negative; never over-spent.
+      const bounded = okCount <= 1 && Number(after?.wallet_balance || 0) >= 0 && spent <= Number(before?.wallet_balance || 0) + 1e-9;
+      record('A18: parallel mints bounded by balance', !!bounded, `ok=${okCount} mins=${mins} spent=${spent}`);
+    }
+
     // A7: finalize_price_verification on unknown report errors closed (shape check).
     {
       const { res } = await rest('/rest/v1/rpc/finalize_price_verification', {

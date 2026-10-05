@@ -28,9 +28,14 @@ class SessionManager {
   private abortController: AbortController | null = null;
   private intentionalClose = false;
   private disconnecting = false;
-  private lastFuelReportTime = 0;
   private connectGeneration = 0;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
+  // Active fuel lease for this session (proportional reservation, migration 16).
+  // Usage accounting = lease debit at mint + reconcile at close. There is NO
+  // parallel deductFuel path: settle-on-disconnect was removed to avoid double
+  // charging (its outbox RPC still exists for legacy actions only).
+  private activeLeaseId: string | null = null;
+  private leaseStartedAt = 0;
 
   getStatus(): SessionStatus {
     return this.status;
@@ -50,12 +55,13 @@ class SessionManager {
   }
 
   /**
-   * Mint a short-lived Live token from our backend. Every connect — including
-   * recovery reconnects — mints a FRESH token (uses:1), so resumption can never
-   * bypass the per-day mint quota or outlive the token expiry enforced by Google.
+   * Mint a short-lived Live token from our backend, backed by a PROPORTIONAL
+   * fuel lease (migration 16). Every connect — including recovery reconnects —
+   * acquires a FRESH lease (uses:1 token), so resumption can never bypass the
+   * balance check, the per-day quota, or the Google-enforced token expiry.
    * No long-lived Gemini credential exists in this bundle.
    */
-  private async mintLiveToken(): Promise<{ token: string; apiVersion: string; expiresAt: string }> {
+  private async mintLiveToken(): Promise<{ token: string; apiVersion: string; expiresAt: string; leaseId: string; minutes: number }> {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('NO_SESSION');
 
@@ -69,8 +75,34 @@ class SessionManager {
     const token = (data as { token?: string })?.token;
     const apiVersion = (data as { apiVersion?: string })?.apiVersion || 'v1beta';
     const expiresAt = (data as { expiresAt?: string })?.expiresAt;
-    if (!token || !expiresAt) throw new Error('BAD_TOKEN');
-    return { token, apiVersion, expiresAt };
+    const leaseId = (data as { leaseId?: string })?.leaseId;
+    const minutes = (data as { minutes?: number })?.minutes;
+    if (!token || !expiresAt || !leaseId || !minutes) throw new Error('BAD_TOKEN');
+    return { token, apiVersion, expiresAt, leaseId, minutes };
+  }
+
+  /**
+   * Reconcile the active lease with ACTUAL usage (idempotent server-side).
+   * Called on every terminal path: clean disconnect, token expiry, and
+   * recovery exhaustion. Crash-without-close leaks at most one lease cost
+   * (bounded, ledger-visible) — never double-charges, never silently drops.
+   */
+  private async closeLease(reason: string) {
+    const leaseId = this.activeLeaseId;
+    if (!leaseId) return;
+    this.activeLeaseId = null;
+    const elapsedSec = this.leaseStartedAt > 0
+      ? Math.max(0, Math.round((Date.now() - this.leaseStartedAt) / 1000))
+      : 0;
+    this.leaseStartedAt = 0;
+    try {
+      await supabase.rpc('close_live_lease', {
+        px_lease_id: leaseId,
+        px_actual_seconds: elapsedSec,
+      });
+    } catch (err) {
+      console.error(`[SessionManager] Lease reconcile failed (${reason}), will retry on next sync:`, err);
+    }
   }
 
   private armExpiryTimer(expiresAt: string, generation: number) {
@@ -111,7 +143,7 @@ class SessionManager {
     }
 
     // Ephemeral credential: minted per connect from our backend (never bundled).
-    let liveToken: { token: string; apiVersion: string; expiresAt: string };
+    let liveToken: { token: string; apiVersion: string; expiresAt: string; leaseId: string; minutes: number };
     try {
       liveToken = await this.mintLiveToken();
     } catch (err) {
@@ -194,7 +226,8 @@ class SessionManager {
           onopen: () => {
             if (generation !== this.connectGeneration || this.intentionalClose) return;
             this.status = 'connected';
-            this.lastFuelReportTime = Date.now();
+            this.activeLeaseId = liveToken.leaseId;
+            this.leaseStartedAt = Date.now();
             connectionRecovery.markSuccess();
             useUIStore.getState().setVoiceError(null);
             conversationState.setListening();
@@ -318,11 +351,10 @@ class SessionManager {
     this.status = 'reconnecting';
 
     console.error('[SessionManager] Unexpected disconnect — attempting recovery without reload');
-    // Account the pre-drop segment EXACTLY ONCE here (before onopen resets the timer).
-    // settleFuel zeroes lastFuelReportTime, so no later path can bill it again:
-    // every interval is accounted at most once (timer zeroed) and at least once
-    // (settle runs on disconnect, recovery-start, and recovery-exhaustion).
-    this.settleFuel();
+    // Reconcile the dead session's lease BEFORE recovery acquires a new one:
+    // usage so far is refunded exactly once (close is idempotent), and the
+    // reconnect mints a fresh lease — no overlap, no free minutes, no double bill.
+    void this.closeLease('unexpected-close');
     this.teardownMediaOnly();
     this.session = null;
     this.sessionPromise = null;
@@ -341,16 +373,6 @@ class SessionManager {
     audioOutputQueue.flush();
   }
 
-  private settleFuel() {
-    if (this.lastFuelReportTime > 0) {
-      const elapsed = (Date.now() - this.lastFuelReportTime) / 1000;
-      if (elapsed > 1) {
-        useUserStore.getState().deductFuel(elapsed);
-      }
-      this.lastFuelReportTime = 0;
-    }
-  }
-
   disconnect() {
     if (this.status === 'idle' && !this.session && !this.disconnecting) return;
     if (this.disconnecting) return;
@@ -361,7 +383,8 @@ class SessionManager {
     connectionRecovery.reset();
     this.clearExpiryTimer();
 
-    this.settleFuel();
+    // Reconcile actual usage against the lease (idempotent refund of unused fuel).
+    void this.closeLease('disconnect');
 
     if (this.abortController) {
       this.abortController.abort();

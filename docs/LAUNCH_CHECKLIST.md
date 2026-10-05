@@ -26,11 +26,26 @@ supabase/migrations/20240806000009_smoke_hotfixes.sql
 
 ```
 supabase/migrations/20240806000010_economy_lockdown.sql      (P0.1: mint-RPC revoke,
-  wallet column protection, server-derived reward entitlement, soft geofence)
+  wallet column allowlist, server-derived reward entitlement, server-date streak,
+  strict soft geofence + audit coords)
 supabase/migrations/20240806000011_price_verification.sql   (P0.3: admin_increment_wallet
-  definition, atomic finalize_price_verification, entitlement guard)
+  definition, atomic finalize_price_verification, entitlement rails, report_date/
+  proof_hash + attempt counters, atomic claim_price_attempt gate)
 supabase/migrations/20240806000012_places_identity.sql      (B2: google_place_id column)
-supabase/migrations/20240806000013_ai_usage_quota.sql       (P0.4: ai_usage + quota RPCs)
+supabase/migrations/20240806000013_ai_usage_quota.sql       (P0.4: ai_usage + quota RPCs
+  + ticket_receipts dedup table)
+supabase/migrations/20240806000014_footprint_visibility.sql (P0.5: own-pending rows
+  visible; DROP+CREATE required — return shape grew)
+supabase/migrations/20240806000015_price_report_identity.sql (P0.5: subject identity
+  resolution, places_cache FK removed)
+supabase/migrations/20240806000016_live_leases.sql          (P0.4b: proportional fuel
+  leases — acquire (lock+debit+quota) + idempotent close/reconcile)
+```
+
+Pre-apply gate (read-only, must exit 0; exact GROUP BY SQL is in the script header):
+
+```
+SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… node scripts/preflight.mjs
 ```
 
 Apply forward-only, in order (09 already live is untouched):
@@ -53,7 +68,7 @@ SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
 Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`, `mint-live-token`, `ai-complete`). Frontend keeps the **anon** key only — no Gemini credential is bundled anymore (Live uses ephemeral tokens, other AI calls use the `ai-complete` proxy).
 
 New/changed Edge Functions to deploy from repo (status: **implemented**, NOT yet deployed):
-- `mint-live-token` (needs secrets: `GEMINI_API_KEY`, plus `SUPABASE_URL` + `SUPABASE_ANON_KEY` for user JWT quota checks; user-JWT caller, gateway JWT check stays ON)
+- `mint-live-token` (proportional fuel leases: balance gate + per-day quota + TTL = granted minutes; needs `GEMINI_API_KEY`, `SUPABASE_URL` + `SUPABASE_ANON_KEY`; user-JWT caller, gateway JWT check stays ON; client reconciles via `close_live_lease`)
 - `ai-complete` (same secrets as above; user-JWT caller)
 - `verify-price` (internal webhook processor: `supabase/config.toml` sets `verify_jwt = false`; needs NEW secret `VERIFY_PRICE_WEBHOOK_SECRET`, mirrored as `x-webhook-secret` header on the Database Webhook for `price_reports` INSERT; handler re-reads the row and enforces ownership/status)
 - `the-dreamer` (internal scheduled job: `verify_jwt = false`; needs NEW secret `THE_DREAMER_JOB_SECRET` sent as `x-job-secret` by the scheduler; ordinary user JWTs are rejected with 403)
