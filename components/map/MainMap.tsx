@@ -12,6 +12,7 @@ import { GeoPoint } from '../../utils/geoPoint';
 import { Footprints as StepIcon, Star } from 'lucide-react';
 import { APP_CONFIG } from '../../config';
 import { MapControls } from './MapControls';
+import { MapErrorBoundary, MapFallback } from './MapErrorBoundary';
 
 declare const google: any;
 
@@ -241,8 +242,7 @@ const handleMapsApiError = (error: unknown) => {
 
 export const MainMap: React.FC = () => {
   const { curatedPlaces, showCurated } = useDiscoveryStore();
-  const { nearbyFootprints, pendingFootprints, userLocation, activePOI, fullDetailPOI } = useMapStore();
-  
+  const { nearbyFootprints, pendingFootprints, userLocation, activePOI, fullDetailPOI, mapsLoadError } = useMapStore();
   const activeId = fullDetailPOI?.id || activePOI?.id;
 
   const visibleCurated = useMemo(() => {
@@ -270,6 +270,26 @@ export const MainMap: React.FC = () => {
 
   const userGeo = useMemo(() => GeoPoint.fromArray(userLocation), [userLocation]);
 
+  // No API key at all: don't even boot the provider (it would only throw).
+  // The rest of the app (tabs, sheets, tools) keeps working on the fallback.
+  if (!APP_CONFIG.GOOGLE.MAPS_API_KEY) {
+    return (
+      <div className="w-full h-full relative map-container">
+        <MapFallback message="کلید Google Maps تنظیم نشده. بقیه بخش‌های برنامه کار می‌کنند." />
+      </div>
+    );
+  }
+
+  // Provider already reported a fatal load error: don't mount the map at all
+  // (its children, incl. the old error banner, would crash with it).
+  if (mapsLoadError) {
+    return (
+      <div className="w-full h-full relative map-container">
+        <MapFallback message={mapsLoadError} />
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-full relative map-container">
       <APIProvider
@@ -278,11 +298,12 @@ export const MainMap: React.FC = () => {
         version={MAPS_JS_VERSION}
         onError={handleMapsApiError}
       >
-        <GoogleMap
-          defaultCenter={{ lat: 41.0082, lng: 28.9784 }}
-          defaultZoom={13}
-          mapId="8e589146f4837837" 
-          disableDefaultUI={true}
+        <MapErrorBoundary>
+          <GoogleMap
+            defaultCenter={{ lat: 41.0082, lng: 28.9784 }}
+            defaultZoom={13}
+            mapId={APP_CONFIG.GOOGLE.MAPS_MAP_ID}
+            disableDefaultUI={true}
           clickableIcons={true}
           className="w-full h-full"
           gestureHandling={'greedy'}
@@ -322,6 +343,7 @@ export const MainMap: React.FC = () => {
 
           <MapControls />
         </GoogleMap>
+        </MapErrorBoundary>
       </APIProvider>
     </div>
   );

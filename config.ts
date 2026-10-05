@@ -23,5 +23,10 @@ export const APP_CONFIG = {
     // ephemeral tokens (mint-live-token Edge Function); other AI calls go through
     // the authenticated ai-complete proxy. Do NOT add a client Gemini key here.
     MAPS_API_KEY: getEnv('VITE_GOOGLE_MAPS_API_KEY', ''),
+    // Cloud Map ID for AdvancedMarker + styling. Production MUST set
+    // VITE_GOOGLE_MAPS_MAP_ID to the styled Map ID of the billed project.
+    // Local dev falls back to Google's public DEMO_MAP_ID (unstyled, but loads
+    // with any valid key — a hardcoded production Map ID + demo key = blank map).
+    MAPS_MAP_ID: getEnv('VITE_GOOGLE_MAPS_MAP_ID', 'DEMO_MAP_ID'),
   }
 };

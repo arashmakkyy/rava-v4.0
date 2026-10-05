@@ -430,7 +430,10 @@ export const useUserStore = create<CleanUserState>()(
 
         set({ isSyncing: true });
         try {
-          const { data: profile, error: profileError } = await supabase.from('profiles').select('*').single();
+          // maybeSingle (not single): a fresh signup legitimately has no profile
+          // row yet (trigger race) — that is an expected null, not an error.
+          // PostgREST answers zero-row single() with 406; maybeSingle returns null.
+          const { data: profile, error: profileError } = await supabase.from('profiles').select('*').maybeSingle();
           const { data: tripRows, error: tripsError } = await supabase
             .from('trips')
             .select('*')
