@@ -122,13 +122,30 @@ class SyncManagerProvider {
       }
       case 'FINALIZE_ONBOARDING': {
         const { profile, trip } = action.payload;
-        const { error: profileError } = await supabase
+        // Explicit UPDATE (never upsert): the row exists via signup trigger, and
+        // only allowlisted user-owned columns are touched. `id` never in SET.
+        const { id: _pid, ...profileUpdate } = profile as Record<string, unknown>;
+        const profileId = (profile as { id: string }).id;
+        const { data: updated, error: profileError } = await supabase
           .from('profiles')
-          .upsert(profile, { onConflict: 'id' });
-        if (profileError) fail('profiles.upsert', profileError);
+          .update(profileUpdate)
+          .eq('id', profileId)
+          .select('id');
+        if (profileError) fail('profiles.update', profileError);
+        if (!updated || updated.length === 0) {
+          const { error: insertError } = await supabase
+            .from('profiles')
+            .insert(profile);
+          const code = (insertError as { code?: string } | null)?.code;
+          // 409 = created concurrently: success-equivalent, keep replaying the rest.
+          if (insertError && code !== '23505') fail('profiles.insert', insertError);
+        }
         if (trip) {
-          const { error: tripError } = await supabase.from('trips').insert(trip);
-          if (tripError) fail('trips.insert', tripError);
+          // ignore-duplicates: a replayed action must not PK-fail on its own trip.
+          const { error: tripError } = await supabase
+            .from('trips')
+            .upsert(trip, { onConflict: 'id', ignoreDuplicates: true });
+          if (tripError) fail('trips.upsert', tripError);
         }
         // Profile-complete reward — server derives entitlement (onboarding flag);
         // only when outbound payload carries a stable tx id.

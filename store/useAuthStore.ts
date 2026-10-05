@@ -249,14 +249,31 @@ export const useAuthStore = create<AuthState>()(
           onboarding_completed: true,
         };
 
+        // Explicit UPDATE (never upsert): the signup trigger guarantees the row
+        // exists, and UPDATE touches only allowlisted user-owned columns.
+        // `id` is intentionally NOT in the SET body (not updatable by clients).
+        const { id: _profileId, ...profileUpdate } = profilePayload;
+
         // Persist profile FIRST so hydrateFromProfile (triggered by updateUser)
         // cannot race and reset onboardingCompleted back to false.
         let profileSaved = false;
         try {
-          const { error: profileError } = await supabase
+          const { data: updated, error: updateError } = await supabase
             .from('profiles')
-            .upsert(profilePayload, { onConflict: 'id' });
-          if (profileError) throw profileError;
+            .update(profileUpdate)
+            .eq('id', user.id)
+            .select('id');
+          if (updateError) throw updateError;
+          if (!updated || updated.length === 0) {
+            // Missing row (trigger race/deleted account): server-controlled creation.
+            const { error: insertError } = await supabase
+              .from('profiles')
+              .insert(profilePayload);
+            // 409 = created concurrently elsewhere: treat as success-equivalent.
+            if (insertError && (insertError as { code?: string }).code !== '23505') {
+              throw insertError;
+            }
+          }
           profileSaved = true;
 
           const { error: tripError } = await supabase
