@@ -25,7 +25,12 @@ serve(async (req) => {
     if (authError || !user) throw new Error("Unauthorized");
 
     const { imagePath } = await req.json();
-    
+    if (typeof imagePath !== 'string' || !imagePath) throw new Error("Missing imagePath");
+
+    // مالکیت فایل: path باید زیر پوشه خود کاربر باشد، وگرنه service role دانلود نمی‌کند.
+    // (پالیسی آپلود همین ساختار را enforce می‌کند؛ این چک confused-deputy را می‌بندد.)
+    if (!imagePath.startsWith(`${user.id}/`)) throw new Error("Forbidden: ticket ownership mismatch");
+
     // ۱. دانلود تصویر
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('tickets')

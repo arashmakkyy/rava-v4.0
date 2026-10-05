@@ -16,14 +16,4 @@ export const edgeService = {
     if (error) throw error;
     return data;
   },
-
-  /**
-   * ارسال گزارش قیمت برای تایید توسط هوش مصنوعی در پس‌زمینه
-   */
-  async triggerPriceVerification(reportId: string) {
-    // این تابع معمولاً توسط Webhook صدا زده می‌شود، اما برای تست دستی اینجا قرار دارد
-    return supabase.functions.invoke('verify-price', {
-      body: { reportId }
-    });
-  }
 };

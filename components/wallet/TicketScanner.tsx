@@ -26,7 +26,10 @@ export const TicketScanner: React.FC<TicketScannerProps> = ({ isOpen, onClose })
       let uploadedPath = '';
 
       try {
-        const fileName = `${Date.now()}-${file.name}`;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('ابتدا وارد حساب شو');
+        // Owner-prefixed path: required by the tickets storage policy (<uid>/...).
+        const fileName = `${user.id}/${Date.now()}-${file.name}`;
         const { error: uploadError } = await supabase.storage.from('tickets').upload(fileName, file);
 
         if (uploadError) throw uploadError;

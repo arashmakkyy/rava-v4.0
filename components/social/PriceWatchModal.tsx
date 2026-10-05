@@ -30,14 +30,16 @@ export const PriceWatchModal: React.FC<PriceWatchModalProps> = ({ poiId, poiName
     let uploadedPath = '';
 
     try {
-      const fileName = `${Date.now()}-${image.name}`;
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('ابتدا وارد حساب شو');
+      // Owner-prefixed path: required by the price_proofs storage policy (<uid>/...).
+      const fileName = `${user.id}/${Date.now()}-${image.name}`;
       const { error: uploadError } = await supabase.storage.from('price_proofs').upload(fileName, image);
       if (uploadError) throw uploadError;
       uploadedPath = fileName;
 
-      const { data: { user } } = await supabase.auth.getUser();
       const { error: dbError } = await supabase.from('price_reports').insert({
-        user_id: user?.id,
+        user_id: user.id,
         place_id: poiId,
         item_name: item,
         reported_price: parseFloat(price),
