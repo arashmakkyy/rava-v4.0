@@ -7,7 +7,8 @@ import { useAuthStore } from '../../store/useAuthStore';
 import { useDiscoveryStore } from '../../store/useDiscoveryStore';
 import { conversationState } from './conversationState';
 import { logContextVolume } from '../../prompts';
-import { wireToolRegistry } from '../ai/toolRegistry';
+import { wireToolRegistry, TOOL_REGISTRY } from '../ai/toolRegistry';
+import { requestToolConfirm } from './toolConfirmation';
 
 export type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -106,6 +107,11 @@ wireToolRegistry(registerTool, LIVE_TOOL_DECLARATIONS);
 /**
  * Dispatch tool calls from Gemini Live to the registry and send responses.
  * Failed tools return soft errors to the model without killing the session.
+ *
+ * Gated tools (requiresConfirmation) PAUSE here: the sheet is shown via
+ * requestToolConfirm and execution resumes only after the user decides.
+ * A cancel produces an explicit {cancelled:true} result for the model —
+ * the side effect never runs.
  */
 export async function dispatchToolCalls(
   functionCalls: FunctionCall[],
@@ -116,6 +122,29 @@ export async function dispatchToolCalls(
   const responses: { id?: string; name?: string; response: { result: unknown } }[] = [];
 
   for (const fc of functionCalls) {
+    const registered = TOOL_REGISTRY.find((t) => t.name === fc.name);
+    if (registered?.requiresConfirmation) {
+      const callId = fc.id || `${fc.name}:${Date.now()}`;
+      const approved = await requestToolConfirm(
+        callId,
+        fc.name || '',
+        registered.confirmLabel || 'این کار انجام شود؟',
+      );
+      if (!approved) {
+        responses.push({
+          id: fc.id,
+          name: fc.name,
+          response: {
+            result: {
+              cancelled: true,
+              message: 'کاربر این کار را لغو کرد. هیچ تغییری انجام نشد.',
+            },
+          },
+        });
+        continue;
+      }
+    }
+
     const handler = toolRegistry[fc.name || ''];
     let result: unknown = 'اوکی شد.';
 

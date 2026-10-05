@@ -420,8 +420,16 @@ export const useUserStore = create<CleanUserState>()(
                   }))
                 : prev.favorites,
               semanticProfile: profile.semantic_profile || {},
-              ...(profile.current_city ? { cityMode: profile.current_city as CityMode } : {}),
+              // Tehran is not a selectable MVP city (no curated pack/map coverage).
+              // Legacy Tehran profiles are coerced to unset so the user re-picks
+              // Istanbul/Dubai via the city picker instead of falling back to Dubai silently.
+              ...(profile.current_city && profile.current_city !== 'Tehran'
+                ? { cityMode: profile.current_city as CityMode }
+                : { cityMode: null }),
             });
+            if (profile.current_city === 'Tehran') {
+              useUIStore.getState().setShowCityPicker(true);
+            }
 
             try {
               const { useAuthStore } = await import('./useAuthStore');

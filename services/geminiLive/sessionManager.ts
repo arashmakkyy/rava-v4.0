@@ -8,6 +8,7 @@ import { conversationState } from './conversationState';
 import { audioInputStream } from './audioInputStream';
 import { audioOutputQueue } from './audioOutputQueue';
 import { dispatchToolCalls, LIVE_TOOL_DECLARATIONS } from './toolCallDispatcher';
+import { cancelAllToolConfirms } from './toolConfirmation';
 import { connectionRecovery } from './connectionRecovery';
 
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
@@ -357,6 +358,8 @@ class SessionManager {
     this.teardownMediaOnly();
     audioOutputQueue.stopAll();
     conversationState.onBargeIn(null);
+    // Pending tool decisions resolve as cancelled so no paused call leaks past the session.
+    cancelAllToolConfirms();
 
     if (this.session) {
       try { this.session.close(); } catch { /* ignore */ }

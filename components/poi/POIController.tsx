@@ -6,6 +6,7 @@ import { useUserStore } from '../../store/useUserStore';
 import { useRouteStore } from '../../store/useRouteStore';
 import { useUIStore } from '../../store/useUIStore';
 import { PlaceService } from '../../services/placeService';
+import { footprintService } from '../../services/social/footprintService';
 import { AudioGraph } from '../../services/audioGraph';
 import { PriceWatchModal } from '../social/PriceWatchModal';
 import { StampCelebration } from '../social/StampCelebration';
@@ -186,21 +187,37 @@ export const POIController: React.FC = () => {
     }
   };
 
-  const submitFootprint = () => {
+  const submitFootprint = async () => {
     if (!comment.trim() || !fullDetailPOI) return;
+    if (fullDetailPOI.lat === 0 && fullDetailPOI.lng === 0) {
+      setPOIError('مختصات این مکان هنوز آماده نیست. چند لحظه صبر کن.');
+      return;
+    }
     setIsSubmitting(true);
-    
-    setTimeout(() => {
-      addFootprintOptimistic(fullDetailPOI.id, {
-        id: Math.random().toString(),
-        user: 'شما',
-        text: comment,
-        date: 'همین الان',
-        is_verified: false
-      });
-      setComment('');
+    setPOIError(null);
+
+    // Persist first: the entry below only renders after the server accepts it,
+    // so a refresh can never silently drop what the user thought was saved.
+    const saved = await footprintService.postFootprint(
+      comment.trim(),
+      fullDetailPOI.lat,
+      fullDetailPOI.lng,
+    );
+    if (!saved) {
+      setPOIError('ثبت ردپا ناموفق بود. اتصال رو چک کن و دوباره تلاش کن.');
       setIsSubmitting(false);
-    }, 800);
+      return;
+    }
+
+    addFootprintOptimistic(fullDetailPOI.id, {
+      id: Math.random().toString(),
+      user: 'شما',
+      text: comment.trim(),
+      date: 'همین الان',
+      is_verified: false
+    });
+    setComment('');
+    setIsSubmitting(false);
   };
 
   const handleFavorite = async () => {

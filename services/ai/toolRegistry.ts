@@ -22,8 +22,10 @@ export interface RegisteredTool {
   domain: ToolDomain;
   name: string;
   description: string;
-  /** If true, UI store may show a confirmation before destructive side-effects. */
+  /** If true, the dispatcher pauses execution until the user confirms in-app. */
   requiresConfirmation?: boolean;
+  /** Persian label shown on the confirmation sheet (required when gated). */
+  confirmLabel?: string;
   declaration: {
     name: string;
     description: string;
@@ -144,6 +146,7 @@ const tools: RegisteredTool[] = [
     name: 'start_route',
     description: 'شروع مسیریابی به POI فعال یا مقصد داده‌شده.',
     requiresConfirmation: true,
+    confirmLabel: 'مسیریابی شروع شود؟',
     declaration: {
       name: 'start_route',
       description: 'مسیریابی پیاده/خودرو/حمل‌ونقل عمومی.',
@@ -160,11 +163,6 @@ const tools: RegisteredTool[] = [
         await selectPOI({ id: String(args.place_id), name: 'مقصد' }, { source: 'tool' });
       }
       const mode = (args.mode as 'walking' | 'driving' | 'transit') || 'walking';
-      useUIStore.getState().setPendingToolConfirm({
-        tool: 'start_route',
-        label: 'شروع مسیریابی؟',
-        payload: { mode },
-      });
       await useRouteStore.getState().startRoute(null, mode);
       useUIStore.getState().setActiveTab('home');
       const { route, error } = useRouteStore.getState();
@@ -317,6 +315,8 @@ const tools: RegisteredTool[] = [
     domain: 'Trip',
     name: 'remove_reorder_item',
     description: 'حذف یا جابه‌جایی آیتم برنامه.',
+    requiresConfirmation: true,
+    confirmLabel: 'این تغییر در برنامه سفر انجام شود؟',
     declaration: {
       name: 'remove_reorder_item',
       description: 'حذف با event_id یا تغییر sequence.',
@@ -364,6 +364,8 @@ const tools: RegisteredTool[] = [
     domain: 'Trip',
     name: 'complete_activity',
     description: 'علامت‌زدن فعالیت به‌عنوان انجام‌شده.',
+    requiresConfirmation: true,
+    confirmLabel: 'این فعالیت انجام‌شده ثبت شود؟',
     declaration: {
       name: 'complete_activity',
       description: 'تکمیل فعالیت با event_id.',
@@ -593,11 +595,6 @@ const tools: RegisteredTool[] = [
     },
     handler: async () => {
       useUIStore.getState().setActiveTab('profile');
-      useUIStore.getState().setPendingToolConfirm({
-        tool: 'show_passport',
-        label: 'پاسپورت',
-        payload: { open: 'passport' },
-      });
       return { ok: true, hint: 'تب پروفایل باز شد.' };
     },
   },

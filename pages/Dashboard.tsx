@@ -4,6 +4,7 @@ import { TopBar } from '../components/layout/TopBar';
 import { BottomBar } from '../components/layout/BottomBar';
 import { CityPickerModal } from '../components/layout/CityPickerModal';
 import { MagicButton } from '../components/voice/MagicButton';
+import { ToolConfirmSheet } from '../components/voice/ToolConfirmSheet';
 import { VisionOverlay } from '../components/camera/VisionOverlay';
 import { POIController } from '../components/poi/POIController';
 import { useUIStore } from '../store/useUIStore';
@@ -110,6 +111,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ defaultTab }) => {
 
       <BottomBar />
       <POIController />
+      <ToolConfirmSheet />
       <VisionOverlay />
       <CityPickerModal />
     </div>
