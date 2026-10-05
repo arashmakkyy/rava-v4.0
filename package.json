@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "fetch:places": "node scripts/fetch_places.mjs",
     "db:migrate": "node scripts/apply_migrations.mjs",
-    "smoke": "node scripts/smoke_test.mjs"
+    "smoke": "node scripts/smoke_test.mjs",
+    "abuse": "node scripts/abuse_test.mjs",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@google/genai": "^1.38.0",
@@ -23,6 +25,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
