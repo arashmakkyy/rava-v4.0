@@ -412,3 +412,17 @@ enabled = true
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# --- Rava Edge Function auth model (explicit per function) ---
+# User-called functions (process-ticket, mint-live-token, ai-complete) keep the
+# default verify_jwt = true: the gateway validates the user JWT and each handler
+# re-checks identity via getUser. No per-function section needed for them.
+#
+# Internal functions carry NO user JWT (Database Webhooks / scheduled jobs), so
+# gateway JWT verification is OFF and each handler validates its own shared
+# secret header instead. Deploy must set the matching secrets AND configure the
+# webhook/scheduler to send them (see docs/LAUNCH_CHECKLIST.md).
+[functions.verify-price]
+verify_jwt = false
+[functions.the-dreamer]
+verify_jwt = false

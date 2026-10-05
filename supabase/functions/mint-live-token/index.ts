@@ -1,7 +1,8 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { GoogleGenAI } from "https://esm.sh/@google/genai";
+import { GoogleGenAI, Modality } from "https://esm.sh/@google/genai@^1";
+import { AI_MODELS } from "../_shared/models.ts";
 
 declare const Deno: any;
 
@@ -20,7 +21,9 @@ const LIVE_API_VERSION = 'v1beta';
 const MAX_LIVE_MINTS_PER_DAY = 10;
 const TOKEN_TTL_MINUTES = 15;
 const NEW_SESSION_WINDOW_SECONDS = 90;
-const LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+// Live model is locked server-side here AND mirrored in the client sessionManager.
+// Revalidate against current docs before rotating (B0 behavioral probe decides).
+const LIVE_MODEL = AI_MODELS.LIVE;
 
 /**
  * Authenticated minter for Gemini Live ephemeral tokens.
@@ -85,7 +88,7 @@ serve(async (req) => {
         newSessionExpireTime: new Date(now + NEW_SESSION_WINDOW_SECONDS * 1000).toISOString(),
         liveConnectConstraints: {
           model: LIVE_MODEL,
-          config: { responseModalities: ['AUDIO'] },
+          config: { responseModalities: [Modality.AUDIO] },
         },
       },
     });

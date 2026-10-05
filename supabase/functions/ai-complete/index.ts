@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { GoogleGenAI, Type } from "https://esm.sh/@google/genai";
+import { AI_MODELS } from "../_shared/models.ts";
 
 declare const Deno: any;
 
@@ -74,7 +75,7 @@ serve(async (req) => {
 
     if (task === 'bargain_verdict') {
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: AI_MODELS.BARGAIN,
         contents: `به عنوان "راوا" (دستیار توریست ایرانی)، این قیمت رو کارشناسی کن:
         آیتم: ${clip(p.item, 100)}
         قیمت اعلامی فروشنده: ${clip(p.price, 32)} ${clip(p.currency, 16)}
@@ -99,7 +100,7 @@ serve(async (req) => {
       text = response.text || '{}';
     } else if (task === 'daily_plan') {
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: AI_MODELS.PLAN,
         contents: `به عنوان راوا، برای امروز من در ${clip(p.city, 32)} یک برنامه سفر باحال بچین.
         موقعیت فعلی من: ${clip(p.location, 64)}
         برنامه شامل: صبح، ناهار، عصر و شب.
@@ -123,7 +124,7 @@ serve(async (req) => {
       const facts = JSON.stringify(p.facts ?? {}).slice(0, MAX_JSON_BYTES);
       const { RECAP_PROMPT } = await import('./recap-prompt.ts');
       const response = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: AI_MODELS.RECAP,
         contents: `DAILY FACTS (JSON):\n${facts}`,
         config: {
           systemInstruction: RECAP_PROMPT,
@@ -145,7 +146,7 @@ serve(async (req) => {
       const reviews = Array.isArray(p.reviews) ? p.reviews.slice(0, 5) : [];
       const reviewText = reviews.map((r) => clip((r as any)?.text ?? '', 500)).join('\n');
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: AI_MODELS.VIBE,
         contents: `تحلیلگر Vibe مکان (راوا): این نظرات را بخوان و اتمسفر مکان را در یک پاراگراف کوتاه (حداکثر ۲ جمله) به زبان فارسی صمیمی خلاصه کن:\n\n${reviewText}`,
         config: { temperature: 0.7 },
       });

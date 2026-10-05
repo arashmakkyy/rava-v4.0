@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { GoogleGenAI, Type } from "https://esm.sh/@google/genai";
+import { AI_MODELS } from "../_shared/models.ts";
 
 declare const Deno: any;
 
@@ -13,7 +14,20 @@ const corsHeaders = {
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
+  // INTERNAL nightly job — never triggerable by an ordinary user JWT.
+  // The scheduler/caller must send the shared job secret (THE_DREAMER_JOB_SECRET).
+  // verify_jwt is OFF for this function (see supabase/config.toml) precisely
+  // because no user identity is involved; this header check IS the auth boundary.
   try {
+    const expectedSecret = Deno.env.get('THE_DREAMER_JOB_SECRET');
+    const providedSecret = req.headers.get('x-job-secret');
+    if (!expectedSecret || providedSecret !== expectedSecret) {
+      return new Response(JSON.stringify({ error: 'forbidden' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -45,7 +59,7 @@ serve(async (req) => {
       const chatString = logs.reverse().map(l => `${l.role}: ${l.content}`).join('\n');
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: AI_MODELS.DREAMER,
         contents: `Based on the following chat history, update the user travel profile. 
         Focus on: likes, dislikes, energy level, and budget sensitivity.
         History:

@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { GoogleGenAI, Type } from "https://esm.sh/@google/genai";
+import { AI_MODELS } from "../_shared/models.ts";
 
 declare const Deno: any;
 
@@ -44,7 +45,7 @@ serve(async (req) => {
     // ۲. پردازش با Gemini 3 Flash
     const ai = new GoogleGenAI({ apiKey: Deno.env.get('GEMINI_API_KEY')! });
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: AI_MODELS.TICKET_OCR,
       contents: {
         parts: [
           { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
