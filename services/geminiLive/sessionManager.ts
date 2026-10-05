@@ -13,6 +13,8 @@ import { connectionRecovery } from './connectionRecovery';
 
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
+// Client mirror of AI_MODELS.LIVE (supabase/functions/_shared/models.ts).
+// Rotate only together with the minter constraint + a B0 behavioral probe.
 const LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
 
 /**
@@ -306,12 +308,20 @@ class SessionManager {
   private handleUnexpectedClose(generation: number) {
     if (generation !== this.connectGeneration) return;
     if (this.intentionalClose || this.disconnecting) return;
+    // onerror + onclose fire for the SAME drop: only the first one may start recovery,
+    // otherwise a single disconnect would burn two retry attempts.
+    if (this.status === 'reconnecting') return;
+    this.status = 'reconnecting';
 
     console.error('[SessionManager] Unexpected disconnect — attempting recovery without reload');
+    // Account the pre-drop segment EXACTLY ONCE here (before onopen resets the timer).
+    // settleFuel zeroes lastFuelReportTime, so no later path can bill it again:
+    // every interval is accounted at most once (timer zeroed) and at least once
+    // (settle runs on disconnect, recovery-start, and recovery-exhaustion).
+    this.settleFuel();
     this.teardownMediaOnly();
     this.session = null;
     this.sessionPromise = null;
-    this.status = 'reconnecting';
     conversationState.setConnecting(true);
 
     const scheduled = connectionRecovery.schedule(() => this.connect({ fromRecovery: true }));
@@ -319,7 +329,6 @@ class SessionManager {
       this.status = 'idle';
       conversationState.setIdle();
       useUIStore.getState().setVoiceError('اتصال قطع شد و تلاش مجدد جواب نداد. دکمه میکروفون رو دوباره بزن.');
-      this.settleFuel();
     }
   }
 

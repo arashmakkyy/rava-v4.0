@@ -190,7 +190,10 @@ class IndexedDBService {
     });
   }
 
-  // مدیریت صف آفلاین اتمیک
+  // مدیریت صف آفلاین اتمیک.
+  // Write failures REJECT (never resolve-as-success): the caller sees the error,
+  // logs it with context, and the optimistic state reconciles on the next
+  // successful syncWithCloud. Silent loss is not an option.
   async pushToOutbox(action: { type: string; payload: any }, userId?: string | null): Promise<void> {
     const db = await this.getDB();
     const tx = db.transaction(this.stores.outbox, 'readwrite');
@@ -201,10 +204,18 @@ class IndexedDBService {
       userId: userId ?? null,
       attempts: 0,
     };
-    tx.objectStore(this.stores.outbox).add(item);
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      const request = tx.objectStore(this.stores.outbox).add(item);
+      request.onerror = () => reject(
+        new Error(`[dbService] outbox enqueue failed (${action.type}): ${request.error?.message || 'IndexedDB error'}`)
+      );
       tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      tx.onerror = () => reject(
+        new Error(`[dbService] outbox transaction failed (${action.type}): ${tx.error?.message || 'IndexedDB error'}`)
+      );
+      tx.onabort = () => reject(
+        new Error(`[dbService] outbox transaction aborted (${action.type})`)
+      );
     });
     // Best-effort immediate flush while online (guarded against reentrancy downstream).
     if (typeof navigator !== 'undefined' && navigator.onLine && this.flushHook) {
@@ -249,6 +260,9 @@ class IndexedDBService {
   }
 
   async removeFromOutbox(id: string): Promise<void> {
+    // Resolve-on-error is DELIBERATE here: a failed delete replays the action,
+    // and every outbox action is idempotent server-side (stable transaction_ids),
+    // so a duplicate delivery is harmless while a lost delete would loop forever.
     const db = await this.getDB();
     return new Promise((resolve) => {
       const tx = db.transaction(this.stores.outbox, 'readwrite');

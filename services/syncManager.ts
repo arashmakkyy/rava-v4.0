@@ -6,11 +6,12 @@ import { useAuthStore } from '../store/useAuthStore';
 const MAX_ATTEMPTS = 5;
 const BACKOFF_CAP_MS = 8000;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 class SyncManagerProvider {
   private isSyncing = false;
   private initialized = false;
+  // Single central retry timer: at most one scheduled wake-up exists at any time,
+  // so a failure can never spawn duplicate processors or retry storms.
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   init() {
     // گارد بحرانی: جلوگیری از مقداردهی اولیه تکراری در React Strict Mode
@@ -28,6 +29,22 @@ class SyncManagerProvider {
 
     if (navigator.onLine) {
       this.processOutbox();
+    }
+  }
+
+  /** Schedule a future retry wake-up (single-flight). Fires processOutbox; guards apply. */
+  private scheduleRetry(delayMs: number) {
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.processOutbox();
+    }, delayMs);
+  }
+
+  private clearRetryTimer() {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
   }
 
@@ -128,7 +145,10 @@ class SyncManagerProvider {
       if (!currentUid) return;
 
       const pendingActions = await dbService.getAllOutboxItems();
-      if (pendingActions.length === 0) return;
+      if (pendingActions.length === 0) {
+        this.clearRetryTimer();
+        return;
+      }
 
       console.log(`[Sync Manager] Processing ${pendingActions.length} pending actions...`);
 
@@ -158,8 +178,9 @@ class SyncManagerProvider {
             continue;
           }
           await dbService.updateOutboxAttempts(action.id, attempts);
-          // Back off, then stop this run to preserve trip/fuel ordering.
-          await sleep(Math.min(1000 * 2 ** (attempts - 1), BACKOFF_CAP_MS));
+          // Real retry: wake up after backoff WITHOUT reload and WITHOUT waiting
+          // for the next online event. Order is preserved (stop this run here).
+          this.scheduleRetry(Math.min(1000 * 2 ** (attempts - 1), BACKOFF_CAP_MS));
           break;
         }
       }
