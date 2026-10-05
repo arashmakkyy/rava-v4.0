@@ -138,6 +138,12 @@ serve(async (req) => {
       px_user_id: user.id,
       px_image_path: imagePath,
       px_trip_id: tripId,
+    }).then(({ error: completeError }) => {
+      // Completion MUST succeed before we report success: otherwise the client
+      // would see a trip while the receipt stays 'processing', and a stale
+      // retry would re-run Gemini for no reason. Throw -> 500 -> retry later,
+      // and the idempotent trip insert makes that retry converge safely.
+      if (completeError) throw completeError;
     });
 
     return new Response(JSON.stringify({ success: true, data: trip }), {

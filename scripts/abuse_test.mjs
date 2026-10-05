@@ -288,30 +288,50 @@ async function main() {
       record('A13: foreign ticket processing forbidden', !!blocked, `status=${res.status}`);
     }
 
-    // A14: double finalize of one report credits once (P0.3 atomicity).
+    // A14: finalize state machine — unclaimed verify is denied (no reward);
+    // claimed verify credits once; re-finalize is an idempotent no-op.
     {
-      const { json: cacheRows } = await rest('/rest/v1/places_cache?select=place_id&limit=1', { token: SERVICE });
-      const cacheId = Array.isArray(cacheRows) ? cacheRows[0]?.place_id : null;
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=1', { token: SERVICE });
+      const canonicalId = Array.isArray(attrRows) ? attrRows[0]?.place_id : null;
       const { json: created } = await rest('/rest/v1/price_reports', {
         method: 'POST', token: A.token, prefer: 'return=representation',
-        body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: 'abuse item', reported_price: 1, currency: 'TRY', proof_image_url: `${A.id}/abuse.jpg`, ai_verification_status: 'pending' },
+        body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `sm ${stamp}`, reported_price: 1, currency: 'TRY', proof_image_url: `${A.id}/sm.jpg`, ai_verification_status: 'pending' },
       });
       const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
       if (!reportId) {
-        record('A14: double finalize credits once', false, 'could not seed price report');
+        record('A14: finalize state machine', false, 'could not seed price report');
+      } else if (!canonicalId) {
+        record('A14: finalize state machine', false, 'no seeded attractions to test canonical path (seed missing?)');
       } else {
-        const call = () => rest('/rest/v1/rpc/finalize_price_verification', {
+        const before = await profileOf(A.token);
+        const unclaimed = await rest('/rest/v1/rpc/finalize_price_verification', {
           method: 'POST', token: SERVICE,
           body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
         });
-        const before = await profileOf(A.token);
-        await call();
+        const stillSame = await profileOf(A.token);
+        const deniedNoReward = unclaimed.json?.ok === false && unclaimed.json?.reason === 'not-claimed'
+          && Number(stillSame?.wallet_balance || 0) === Number(before?.wallet_balance || 0);
+        const claim = await rest('/rest/v1/rpc/claim_price_attempt', {
+          method: 'POST', token: SERVICE, body: { px_report_id: reportId },
+        });
+        const fin1 = await rest('/rest/v1/rpc/finalize_price_verification', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
+        });
         const mid = await profileOf(A.token);
-        const second = await call();
+        const fin2 = await rest('/rest/v1/rpc/finalize_price_verification', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
+        });
         const after = await profileOf(A.token);
-        const once = mid && after && Number(mid.wallet_balance) === Number(after.wallet_balance) && Number(mid.wallet_balance) > Number(before?.wallet_balance ?? 0);
-        const flagged = second.json && second.json.idempotent === true;
-        record('A14: double finalize credits once + idempotent flag', !!once && !!flagged, `second=${JSON.stringify(second.json)}`);
+        const creditedOnce = Number(mid?.wallet_balance || 0) > Number(before?.wallet_balance || 0)
+          && Number(after?.wallet_balance || 0) === Number(mid?.wallet_balance || 0);
+        const secondNoop = fin2.json?.idempotent === true;
+        record(
+          'A14: unclaimed denied, claimed credits once, re-finalize noop',
+          !!deniedNoReward && !!claim.json?.ok && fin1.json?.status === 'verified' && !!creditedOnce && !!secondNoop,
+          `unclaimed=${JSON.stringify(unclaimed.json)} fin1=${JSON.stringify(fin1.json)} fin2=${JSON.stringify(fin2.json)}`
+        );
       }
     }
 
@@ -327,18 +347,20 @@ async function main() {
       record('A15: user JWT cannot trigger the-dreamer', !!blocked, `status=${res.status}`);
     }
 
-    // A19: full price flow — create -> claim -> processing -> finalize verified
-    // rewards exactly once; re-finalize is a no-op (P0.3 state machine).
+    // A19: full price flow on a CANONICAL place — create -> claim -> processing
+    // -> finalize verified rewards exactly once; re-finalize is a no-op.
     {
-      const { json: cacheRows } = await rest('/rest/v1/places_cache?select=place_id&limit=1', { token: SERVICE });
-      const cacheId = Array.isArray(cacheRows) ? cacheRows[0]?.place_id : null;
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=1', { token: SERVICE });
+      const canonicalId = Array.isArray(attrRows) ? attrRows[0]?.place_id : null;
       const { json: created } = await rest('/rest/v1/price_reports', {
         method: 'POST', token: A.token, prefer: 'return=representation',
-        body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: `flow ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow.jpg`, ai_verification_status: 'pending' },
+        body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `flow ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow.jpg`, ai_verification_status: 'pending' },
       });
       const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
       if (!reportId) {
-        record('A19: price claim->finalize flow', false, 'could not seed price report');
+        record('A19: price canonical flow', false, 'could not seed price report');
+      } else if (!canonicalId) {
+        record('A19: price canonical flow', false, 'no seeded attractions (seed missing?)');
       } else {
         const claim = await rest('/rest/v1/rpc/claim_price_attempt', {
           method: 'POST', token: SERVICE, body: { px_report_id: reportId },
@@ -361,7 +383,7 @@ async function main() {
         // Rejected path on a second report must credit nothing.
         const { json: created2 } = await rest('/rest/v1/price_reports', {
           method: 'POST', token: A.token, prefer: 'return=representation',
-          body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: `flow2 ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow2.jpg`, ai_verification_status: 'pending' },
+          body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `flow2 ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow2.jpg`, ai_verification_status: 'pending' },
         });
         const reportId2 = Array.isArray(created2) ? created2[0]?.id : created2?.id;
         let rejectedClean = false;
@@ -376,9 +398,65 @@ async function main() {
           rejectedClean = Number(a2?.wallet_balance || 0) === Number(b2?.wallet_balance || 0);
         }
         record(
-          'A19: price claim->finalize flow (reward once, re-finalize noop, reject clean)',
+          'A19: price canonical flow (reward once, re-finalize noop, reject clean)',
           !!claimed && fin1.json?.status === 'verified' && !!creditedOnce && !!secondNoop && !!rejectedClean,
           `claim=${JSON.stringify(claim.json)} fin1=${JSON.stringify(fin1.json)} fin2=${JSON.stringify(fin2.json)}`
+        );
+      }
+    }
+
+    // A21: fake place_id cannot farm rewards — AI-verified or not, an unlisted
+    // place lands terminal with zero credit (canonical-place invariant).
+    {
+      const { json: created } = await rest('/rest/v1/price_reports', {
+        method: 'POST', token: A.token, prefer: 'return=representation',
+        body: { user_id: A.id, place_id: `fake-place-${stamp}`, item_name: `fake ${stamp}`, reported_price: 9, currency: 'TRY', proof_image_url: `${A.id}/fake.jpg`, ai_verification_status: 'pending' },
+      });
+      const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
+      if (!reportId) {
+        record('A21: fake place earns nothing', false, 'could not seed price report');
+      } else {
+        const before = await profileOf(A.token);
+        await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: reportId } });
+        const fin = await rest('/rest/v1/rpc/finalize_price_verification', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
+        });
+        const after = await profileOf(A.token);
+        record(
+          'A21: fake place -> unlisted, zero credit',
+          fin.json?.status === 'unlisted' && Number(after?.wallet_balance || 0) === Number(before?.wallet_balance || 0),
+          `fin=${JSON.stringify(fin.json)}`
+        );
+      }
+    }
+
+    // A22: stale retry consumes a NEW quota unit (every real AI invocation costs).
+    // Age the lease via service key (simulates a crashed worker 1h ago), then
+    // reclaim: must resume AND increment ai_calls_made.
+    {
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=1', { token: SERVICE });
+      const canonicalId = Array.isArray(attrRows) ? attrRows[0]?.place_id : null;
+      const { json: created } = await rest('/rest/v1/price_reports', {
+        method: 'POST', token: A.token, prefer: 'return=representation',
+        body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `stale ${stamp}`, reported_price: 3, currency: 'TRY', proof_image_url: `${A.id}/stale.jpg`, ai_verification_status: 'pending' },
+      });
+      const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
+      if (!reportId) {
+        record('A22: stale retry consumes quota', false, 'could not seed price report');
+      } else {
+        const c1 = await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: reportId } });
+        await rest('/rest/v1/price_reports?id=eq.' + reportId, {
+          method: 'PATCH', token: SERVICE,
+          body: { processing_started_at: new Date(Date.now() - 3600_000).toISOString() },
+        });
+        const c2 = await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: reportId } });
+        const { json: row } = await rest(`/rest/v1/price_reports?id=eq.${reportId}&select=ai_calls_made`, { token: SERVICE });
+        const calls = Array.isArray(row) ? row[0]?.ai_calls_made : null;
+        record(
+          'A22: stale retry resumes AND consumes quota',
+          c1.json?.ok === true && c2.json?.ok === true && c2.json?.resumed === true && Number(calls) === 2,
+          `c1=${JSON.stringify(c1.json)} c2=${JSON.stringify(c2.json)} calls=${calls}`
         );
       }
     }

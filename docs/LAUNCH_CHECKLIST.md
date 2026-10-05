@@ -29,11 +29,14 @@ supabase/migrations/20240806000010_economy_lockdown.sql      (P0.1: mint-RPC rev
   wallet column allowlist, server-derived reward entitlement, server-date streak,
   strict soft geofence + audit coords)
 supabase/migrations/20240806000011_price_verification.sql   (P0.3: admin_increment_wallet
-  definition, atomic finalize_price_verification, entitlement rails, report_date/
-  proof_hash + attempt counters, atomic claim_price_attempt gate)
+  definition, atomic finalize_price_verification (claimed-first + canonical-place
+  gate, terminal: verified/rejected/capped/unlisted), entitlement rails, report_date/
+  proof_hash + attempt counters, atomic claim_price_attempt gate with per-report
+  retry cap, server-owned insert trigger)
 supabase/migrations/20240806000012_places_identity.sql      (B2: google_place_id column)
 supabase/migrations/20240806000013_ai_usage_quota.sql       (P0.4: ai_usage + quota RPCs
-  + ticket_receipts dedup table)
+  + ticket_receipts claim state machine (processing/completed/failed(_terminal),
+  claim/fail/complete RPCs, cooldown + retry cap))
 supabase/migrations/20240806000014_footprint_visibility.sql (P0.5: own-pending rows
   visible; DROP+CREATE required — return shape grew)
 supabase/migrations/20240806000015_price_report_identity.sql (P0.5: subject identity
@@ -48,22 +51,36 @@ Pre-apply gate (read-only, must exit 0; exact GROUP BY SQL is in the script head
 SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… node scripts/preflight.mjs
 ```
 
-Apply forward-only, in order (09 already live is untouched):
+Apply forward-only, in order (09 already live is untouched).
 
-```
-SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
-```
+### Staging runbook (in this exact order; stop on first red)
+
+1. **Preflight (read-only gate, must exit 0):**
+   ```
+   SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… node scripts/preflight.mjs
+   ```
+2. **Migrations — official path first:** `supabase link` (once) then `supabase db push`,
+   which applies ONLY pending migrations and records them in
+   `supabase_migrations.schema_migrations`. Verify with:
+   `select version from supabase_migrations.schema_migrations order by 1;`
+   — versions 10–16 must all be present exactly once.
+3. **Emergency fallback only:** `scripts/apply_migrations.mjs` (manual runner, no
+   history tracking). It REFUSES to run without all three:
+   ```
+   SUPABASE_ACCESS_TOKEN=… FROM_MIGRATION=20240806000010 --yes node scripts/apply_migrations.mjs
+   ```
+   Never use it to replay 01–09 (seed data would be re-upserted). Rollback path:
+   forward-only fix migration (historical rewrite is forbidden after first apply).
+4. **Edge deploy** from repo + secrets (`GEMINI_API_KEY`, `VERIFY_PRICE_WEBHOOK_SECRET`,
+   `THE_DREAMER_JOB_SECRET`, `SUPABASE_URL`/`SUPABASE_ANON_KEY`) + webhook/scheduler headers.
+5. **`npm run smoke` → `npm run abuse`** (both need live credentials; abuse must be all-green).
+6. **`npx playwright test`** (boot green; auth/outbox suites need `E2E_EMAIL`/`E2E_PASSWORD`).
+7. **Production verification:** re-run smoke/abuse against production + confirm wallet,
+   map tiles, and one Live session mint.
 
 > `apply_migrations.mjs` is a MANUAL RUNNER, not a migration system: it re-executes
 > whole files and tracks no history. Source of truth is the Supabase migration
 > history. All new schema changes must be forward-only migrations.
-
-Re-run history: source of truth is the Supabase migration history, not this runner.
-The script below is manual-only (re-executes whole files, tracks no history).
-
-```
-SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
-```
 
 Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`, `mint-live-token`, `ai-complete`). Frontend keeps the **anon** key only — no Gemini credential is bundled anymore (Live uses ephemeral tokens, other AI calls use the `ai-complete` proxy).
 
@@ -74,14 +91,14 @@ New/changed Edge Functions to deploy from repo (status: **implemented**, NOT yet
 - `the-dreamer` (internal scheduled job: `verify_jwt = false`; needs NEW secret `THE_DREAMER_JOB_SECRET` sent as `x-job-secret` by the scheduler; ordinary user JWTs are rejected with 403)
 - `process-ticket` (redeploy: ownership check; user-JWT caller, gateway JWT check stays ON)
 
-**Verified remote state**
+**Verified remote state (as of 2026-08; NEW versions in §1b are implemented, NOT yet deployed)**
 - Istanbul curated POIs: 31 · Dubai: 28
 - RLS enabled on private + curated tables
 - Idempotent `deduct_fuel(seconds, reason, transaction_id)`
 - Economy RPCs revoked from `anon`; public place RPCs granted to `anon`+`authenticated`
 - `admin_increment_wallet` = `service_role` only
 - Storage buckets: `avatars`, `tickets`, `narratives`, `price_proofs`
-- Edge functions redeployed from repo (ACTIVE)
+- Edge functions: OLD versions ACTIVE; NEW versions (§1b/functions above) implemented locally, awaiting deploy
 
 **Still required before public launch**
 - Set Auth **Site URL** + redirect allow-list to the production domain (currently `http://localhost:3000` + local allow-list)

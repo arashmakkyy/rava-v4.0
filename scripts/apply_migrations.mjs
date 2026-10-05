@@ -6,7 +6,13 @@
  * SQL itself is written idempotently (IF NOT EXISTS / CREATE OR REPLACE / ON CONFLICT).
  * All new schema changes must be forward-only migrations, never rewrites of old files.
  *
- * SUPABASE_ACCESS_TOKEN required. Optional: FROM_MIGRATION=20240806000003
+ * PRODUCTION DEPLOY PATH: the official Supabase workflow (`supabase link` +
+ * `supabase db push`, which applies only pending migrations and records history).
+ * This runner exists ONLY for dev/emergency use and REFUSES to run without
+ * explicit scoping — there is intentionally NO default that replays history.
+ *
+ * Required env/flags (all three, otherwise exit 2 without touching anything):
+ *   SUPABASE_ACCESS_TOKEN=...  FROM_MIGRATION=20240806000010|11|...  --yes
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,12 +21,21 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REF = 'thmsfdugojokxtemnqdw';
 const TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
-const FROM = process.env.FROM_MIGRATION || '20240806000001';
+const FROM = process.env.FROM_MIGRATION || '';
+const CONFIRMED = process.argv.includes('--yes');
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'supabase', 'migrations');
 
 if (!TOKEN) {
   console.error('Missing SUPABASE_ACCESS_TOKEN');
-  process.exit(1);
+  process.exit(2);
+}
+if (!FROM || !/^\d{14}$/.test(FROM)) {
+  console.error('Refusing to run: set FROM_MIGRATION=<14-digit version> explicitly (no default replay).');
+  process.exit(2);
+}
+if (!CONFIRMED) {
+  console.error('Refusing to run: pass --yes to confirm manual migration apply.');
+  process.exit(2);
 }
 
 const files = fs
