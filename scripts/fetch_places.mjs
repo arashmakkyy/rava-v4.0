@@ -1,42 +1,72 @@
 /**
  * scripts/fetch_places.mjs
  *
- * Upsert curated attractions from Google Places API (New) into Supabase.
- * API key must be SERVER-ONLY — never ship this key in the Vite client bundle.
+ * Resolve Google Place IDs for curated attractions and refresh their
+ * coordinates/ratings/hours from Google Places API (New) into Supabase.
+ *
+ * IDENTITY MODEL (see migration 12): internal attractions.place_id PK NEVER
+ * changes. Matching fills attractions.google_place_id + fresh geo/ratings.
+ * Persian names/descriptions are curated and NEVER overwritten here.
  *
  * Usage:
- *   GOOGLE_PLACES_API_KEY=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
- *     node scripts/fetch_places.mjs --city Istanbul
+ *   node scripts/fetch_places.mjs --city Istanbul            # dry-run: print plan
+ *   node scripts/fetch_places.mjs --city Istanbul --apply    # resolve + upsert
  *
- * Without a key the script prints the planned upserts and exits 0 (dry-run stub).
+ * Env (only needed with --apply):
+ *   GOOGLE_PLACES_API_KEY=...        (server-only, never shipped to the browser)
+ *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+ *   (.env.local is read as a fallback source for these.)
  *
- * Synthetic place_id format used in seed SQL:
- *   rava_syn_{city_slug}_{place_slug}
- * Real Google Place IDs (ChIJ…) should replace synthetics when resolved.
+ * Safety: without --apply nothing touches the network except nothing at all —
+ * dry-run prints queries and exits 0. With --apply, every row is printed
+ * BEFORE its REST call so the operator can audit the log afterwards.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// English search term for Google + the synthetic PK it should match (if any).
+// Entries WITHOUT matchSyn insert as brand-new curated rows (rare; review first).
+// Generic/non-matchable entries (pharmacies, card centers, metro stations) are
+// intentionally absent — they stay synthetic-only by design.
 const CITY_QUERIES = {
   Istanbul: [
     { name: 'Galata Tower', category: 'attractions' },
     { name: 'Hagia Sophia', category: 'attractions' },
-    { name: 'Topkapi Palace', category: 'attractions' },
-    { name: 'Grand Bazaar Istanbul', category: 'shopping' },
-    { name: 'Basilica Cistern', category: 'attractions' },
-    { name: 'Spice Bazaar Istanbul', category: 'shopping' },
-    { name: 'Ciya Sofrasi Kadikoy', category: 'food' },
-    { name: 'Mandabatmaz', category: 'cafes' },
+    { name: 'Topkapi Palace', category: 'attractions', matchSyn: 'rava_syn_istanbul_topkapi' },
+    { name: 'Basilica Cistern', category: 'attractions', matchSyn: 'rava_syn_istanbul_cistern' },
+    { name: 'Blue Mosque Sultanahmet', category: 'attractions', matchSyn: 'rava_syn_istanbul_blue_mosque' },
+    { name: "Maiden's Tower Istanbul", category: 'attractions', matchSyn: 'rava_syn_istanbul_maiden_tower' },
+    { name: 'Grand Bazaar Istanbul', category: 'shopping', matchSyn: 'rava_syn_istanbul_grand_bazaar' },
+    { name: 'Spice Bazaar Istanbul', category: 'shopping', matchSyn: 'rava_syn_istanbul_spice_bazaar' },
+    { name: 'Istiklal Street', category: 'attractions', matchSyn: 'rava_syn_istanbul_istiklal' },
+    { name: 'Ciya Sofrasi Kadikoy', category: 'food', matchSyn: 'rava_syn_istanbul_ciya' },
+    { name: 'Karakoy Lokantasi', category: 'food', matchSyn: 'rava_syn_istanbul_karakoy_lokanta' },
+    { name: 'Mandabatmaz Turk Kahvesi', category: 'cafes', matchSyn: 'rava_syn_istanbul_mandabatmaz' },
+    { name: 'Petra Roasting Co Istanbul', category: 'cafes', matchSyn: 'rava_syn_istanbul_petra_roja' },
+    { name: 'Mikla Restaurant Istanbul', category: 'food', matchSyn: 'rava_syn_istanbul_mikla' },
+    { name: 'Balat Istanbul', category: 'hidden_gems', matchSyn: 'rava_syn_istanbul_fener_balat' },
+    { name: "Princes' Islands Istanbul", category: 'attractions', matchSyn: 'rava_syn_istanbul_princes_islands' },
+    { name: 'Miniaturk Istanbul', category: 'attractions', matchSyn: 'rava_syn_istanbul_miniaturk' },
+    { name: 'Gulhane Park', category: 'attractions', matchSyn: 'rava_syn_istanbul_gulhane' },
   ],
   Dubai: [
     { name: 'Burj Khalifa', category: 'attractions' },
     { name: 'The Dubai Mall', category: 'shopping' },
-    { name: 'Museum of the Future Dubai', category: 'attractions' },
-    { name: 'Al Fahidi Historical Neighbourhood', category: 'hidden_gems' },
-    { name: 'Gold Souk Dubai', category: 'shopping' },
-    { name: 'Ravi Restaurant Satwa', category: 'food' },
-    { name: '% Arabica Souk Al Bahar', category: 'cafes' },
+    { name: 'Museum of the Future Dubai', category: 'attractions', matchSyn: 'rava_syn_dubai_museum_future' },
+    { name: 'Dubai Frame', category: 'attractions', matchSyn: 'rava_syn_dubai_frame' },
+    { name: 'Palm Jumeirah', category: 'attractions', matchSyn: 'rava_syn_dubai_palm' },
+    { name: 'Burj Al Arab', category: 'attractions', matchSyn: 'rava_syn_dubai_burj_arab' },
+    { name: 'Souk Madinat Jumeirah', category: 'shopping', matchSyn: 'rava_syn_dubai_souk_madinat' },
+    { name: 'Dubai Gold Souk', category: 'shopping', matchSyn: 'rava_syn_dubai_gold_souk' },
+    { name: 'Ravi Restaurant Satwa', category: 'food', matchSyn: 'rava_syn_dubai_ravi' },
+    { name: 'Pierchic Dubai', category: 'food', matchSyn: 'rava_syn_dubai_pierchic' },
+    { name: '% Arabica Dubai', category: 'cafes', matchSyn: 'rava_syn_dubai_arabica' },
+    { name: 'Al Fahidi Historical Neighbourhood', category: 'hidden_gems', matchSyn: 'rava_syn_dubai_al_fahidi' },
+    { name: 'Hatta Dubai', category: 'attractions', matchSyn: 'rava_syn_dubai_hatta' },
+    { name: 'Dubai Miracle Garden', category: 'attractions', matchSyn: 'rava_syn_dubai_miracle_garden' },
+    { name: 'Dubai Aquarium', category: 'attractions', matchSyn: 'rava_syn_dubai_aquarium' },
+    { name: 'Rashid Hospital Dubai', category: 'essentials', matchSyn: 'rava_syn_dubai_rashid_hospital' },
   ],
 };
 
@@ -54,8 +84,17 @@ function loadEnvFromDotenv() {
 function parseArgs(argv) {
   const cityIdx = argv.indexOf('--city');
   const city = cityIdx >= 0 ? argv[cityIdx + 1] : 'Istanbul';
-  const dry = argv.includes('--dry-run') || !process.env.GOOGLE_PLACES_API_KEY;
-  return { city, dry };
+  const apply = argv.includes('--apply');
+  return { city, apply };
+}
+
+function restHeaders(key, extra = {}) {
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
 }
 
 async function textSearch(query, apiKey) {
@@ -66,7 +105,7 @@ async function textSearch(query, apiKey) {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': apiKey,
       'X-Goog-FieldMask':
-        'places.id,places.displayName,places.location,places.rating,places.priceLevel,places.photos,places.formattedAddress,places.regularOpeningHours,places.types',
+        'places.id,places.displayName,places.location,places.rating,places.priceLevel,places.formattedAddress,places.regularOpeningHours,places.types',
     },
     body: JSON.stringify({ textQuery: query, languageCode: 'en', maxResultCount: 1 }),
   });
@@ -78,22 +117,16 @@ async function textSearch(query, apiKey) {
   return data.places?.[0] || null;
 }
 
-function toAttractionRow(place, city, category, destinationId) {
+function toRefreshPayload(place, city, category) {
   const lat = place.location?.latitude;
   const lng = place.location?.longitude;
-  const nameFa = place.displayName?.text || 'Unknown';
   return {
-    place_id: place.id,
-    destination_id: destinationId,
-    name: nameFa,
-    // PostGIS point as WKT for manual SQL; supabase-js uses geography via RPC preferably
-    location_wkt: `SRID=4326;POINT(${lng} ${lat})`,
-    lat,
-    lng,
+    google_place_id: place.id,
+    // PostGIS geography as WKT; Supabase REST accepts it for geography columns.
+    location: `SRID=4326;POINT(${lng} ${lat})`,
     static_data: {
       category,
       name_local: place.displayName?.text,
-      description_fa: '',
       address: place.formattedAddress || '',
       rating: place.rating ?? null,
       price_range: place.priceLevel ? Number(String(place.priceLevel).replace(/\D/g, '')) || 2 : 2,
@@ -101,37 +134,64 @@ function toAttractionRow(place, city, category, destinationId) {
       tags: (place.types || []).slice(0, 5),
       city,
       country: city === 'Dubai' ? 'AE' : 'TR',
+      refreshed_at: new Date().toISOString(),
     },
-    assets: { photos: [] },
-    is_premium: category === 'attractions',
   };
 }
 
-async function upsertViaSupabase(rows) {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
-    console.warn('[fetch_places] Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — printing rows only.');
-    console.log(JSON.stringify(rows, null, 2));
-    return;
-  }
+async function resolveDestinationId(supabaseUrl, serviceKey, city) {
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/destinations?name=eq.${encodeURIComponent(city)}&select=id`,
+    { headers: restHeaders(serviceKey) }
+  );
+  if (!res.ok) throw new Error(`destinations lookup failed (${res.status})`);
+  const rows = await res.json();
+  if (!rows?.[0]?.id) throw new Error(`destination not found for city "${city}"`);
+  return rows[0].id;
+}
 
-  // Prefer a SQL RPC that accepts WKT; without it, log SQL for operator.
-  console.log('[fetch_places] Service role present. Emitting upsert SQL:');
-  for (const r of rows) {
-    console.log(
-      `INSERT INTO attractions (place_id, destination_id, name, location, static_data, assets, is_premium)
- VALUES ('${r.place_id}', '${r.destination_id}', $${JSON.stringify(r.name)}$$,
- ST_GeogFromText('${r.location_wkt}'), '${JSON.stringify(r.static_data)}'::jsonb,
- '${JSON.stringify(r.assets)}'::jsonb, ${r.is_premium})
- ON CONFLICT (place_id) DO UPDATE SET static_data = EXCLUDED.static_data, assets = EXCLUDED.assets, updated_at = NOW();`,
-    );
-  }
+async function applyMatch(supabaseUrl, serviceKey, synId, payload) {
+  console.log(`  SQL: UPDATE attractions SET google_place_id='${payload.google_place_id}' WHERE place_id='${synId}';`);
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/attractions?place_id=eq.${encodeURIComponent(synId)}`,
+    {
+      method: 'PATCH',
+      headers: restHeaders(serviceKey, { Prefer: 'return=representation' }),
+      body: JSON.stringify({
+        google_place_id: payload.google_place_id,
+        location: payload.location,
+        static_data: payload.static_data,
+      }),
+    }
+  );
+  if (!res.ok) throw new Error(`match update failed (${res.status}): ${await res.text()}`);
+}
+
+async function applyInsert(supabaseUrl, serviceKey, destinationId, place, city, category) {
+  const refresh = toRefreshPayload(place, city, category);
+  const row = {
+    place_id: place.id,
+    destination_id: destinationId,
+    // Curated Persian copy must be filled by an operator afterwards.
+    name: place.displayName?.text || place.id,
+    location: refresh.location,
+    static_data: { ...refresh.static_data, description_fa: '' },
+    assets: { photos: [] },
+    is_premium: category === 'attractions',
+    google_place_id: place.id,
+  };
+  console.log(`  SQL: INSERT attractions(place_id='${row.place_id}') — NEW curated row, Persian copy pending;`);
+  const res = await fetch(`${supabaseUrl}/rest/v1/attractions`, {
+    method: 'POST',
+    headers: restHeaders(serviceKey, { Prefer: 'resolution=merge-duplicates,return=representation' }),
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) throw new Error(`insert failed (${res.status}): ${await res.text()}`);
 }
 
 async function main() {
   loadEnvFromDotenv();
-  const { city, dry } = parseArgs(process.argv);
+  const { city, apply } = parseArgs(process.argv);
   const queries = CITY_QUERIES[city];
   if (!queries) {
     console.error(`Unknown city "${city}". Supported: ${Object.keys(CITY_QUERIES).join(', ')}`);
@@ -139,39 +199,53 @@ async function main() {
   }
 
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  console.log(`[fetch_places] city=${city} dry=${dry} queries=${queries.length}`);
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (dry || !apiKey) {
+  console.log(`[fetch_places] city=${city} apply=${apply} queries=${queries.length}`);
+
+  if (!apply || !apiKey) {
     console.log(`
-DRY RUN — set GOOGLE_PLACES_API_KEY (server-only) to call Places API.
+DRY RUN — add --apply plus GOOGLE_PLACES_API_KEY (server-only) to resolve.
 Planned queries for ${city}:
-${queries.map((q) => `  - [${q.category}] ${q.name}`).join('\n')}
+${queries.map((q) => `  - [${q.category}] ${q.name}${q.matchSyn ? `  ->  ${q.matchSyn}` : '  (NEW row)'}`).join('\n')}
 
-After fetch:
-  1. Resolve destination_id from destinations.name = '${city}'
-  2. Upsert attractions with real place_id (replace rava_syn_* when matched)
-  3. Keep Persian name / description_fa from seed; refresh lat/lng/rating/hours from Google
+Matching fills google_place_id + geo/ratings on the synthetic PK (never renames it).
+Entries without matchSyn insert new rows whose Persian copy needs an operator.
 `);
     process.exit(0);
   }
 
-  const rows = [];
+  if (!supabaseUrl || !serviceKey) {
+    console.error('Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for --apply.');
+    process.exit(1);
+  }
+
+  const destinationId = await resolveDestinationId(supabaseUrl, serviceKey, city);
+  let matched = 0;
+  let inserted = 0;
   for (const q of queries) {
     try {
       const place = await textSearch(`${q.name} ${city}`, apiKey);
       if (!place) {
-        console.warn(`No result for: ${q.name}`);
+        console.warn(`No result for: ${q.name} (left untouched)`);
         continue;
       }
-      rows.push(toAttractionRow(place, city, q.category, `/* resolve destinations.id for ${city} */`));
-      console.log(`✓ ${q.name} → ${place.id}`);
+      const payload = toRefreshPayload(place, city, q.category);
+      if (q.matchSyn) {
+        await applyMatch(supabaseUrl, serviceKey, q.matchSyn, payload);
+        console.log(`✓ ${q.name} → ${place.id} (matched ${q.matchSyn})`);
+        matched += 1;
+      } else {
+        await applyInsert(supabaseUrl, serviceKey, destinationId, place, city, q.category);
+        console.log(`✓ ${q.name} → ${place.id} (inserted)`);
+        inserted += 1;
+      }
     } catch (err) {
       console.error(`✗ ${q.name}:`, err.message);
     }
   }
-
-  await upsertViaSupabase(rows);
-  console.log(`[fetch_places] Done. ${rows.length} places resolved.`);
+  console.log(`[fetch_places] Done. matched=${matched} inserted=${inserted}`);
 }
 
 main().catch((err) => {
