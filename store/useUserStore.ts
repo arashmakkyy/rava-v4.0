@@ -216,6 +216,7 @@ export const useUserStore = create<CleanUserState>()(
         set((state) => ({
           wallet: { ...state.wallet, balance: Math.max(0, currentBalance - hours) },
         }));
+        const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'DEDUCT_FUEL',
           payload: {
@@ -224,7 +225,7 @@ export const useUserStore = create<CleanUserState>()(
             // Stable id — syncManager must reuse on retry (never regenerate)
             transaction_id: transactionId,
           },
-        });
+        }, userId);
       },
 
       claimReward: async (type: RewardEventType, transactionId?: string) => {
@@ -253,14 +254,14 @@ export const useUserStore = create<CleanUserState>()(
             px_transaction_id: txId,
             px_reward_type: type,
           },
-        });
+        }, await resolveUserId());
       },
 
       recordStreak: async () => {
         await dbService.pushToOutbox({
           type: 'RECORD_STREAK',
           payload: { date: new Date().toISOString().slice(0, 10) },
-        });
+        }, await resolveUserId());
       },
 
       updateTripBudget: async (patch) => {
@@ -360,7 +361,7 @@ export const useUserStore = create<CleanUserState>()(
             px_lat: stamp.lat ?? null,
             px_lng: stamp.lng ?? null,
           },
-        });
+        }, await resolveUserId());
 
         set({ isStamping: false });
       },
@@ -371,25 +372,28 @@ export const useUserStore = create<CleanUserState>()(
 
         set({ isSyncing: true });
         try {
-          const { data: profile } = await supabase.from('profiles').select('*').single();
-          const { data: tripRows } = await supabase
+          const { data: profile, error: profileError } = await supabase.from('profiles').select('*').single();
+          const { data: tripRows, error: tripsError } = await supabase
             .from('trips')
             .select('*')
             .order('start_time', { ascending: true });
-          const { data: journeyRows } = await supabase
+          const { data: journeyRows, error: journeysError } = await supabase
             .from('user_trips')
             .select('*')
             .order('updated_at', { ascending: false });
-          const { data: stamps } = await supabase
+          const { data: stamps, error: stampsError } = await supabase
             .from('stamps')
             .select('*')
             .order('created_at', { ascending: false });
-          const { data: favs } = await supabase
+          const { data: favs, error: favsError } = await supabase
             .from('favorites')
             .select('*')
             .order('created_at', { ascending: false });
 
-          if (profile) {
+          // A failed query returns { data: null, error } — never confuse it with
+          // an empty list, or local state gets wiped by a network/RLS hiccup.
+          if (profile && !profileError) {
+            const prev = get();
             set({
               wallet: {
                 balance: profile.wallet_balance,
@@ -398,21 +402,23 @@ export const useUserStore = create<CleanUserState>()(
                 isReferred: !!profile.referred_by,
                 currentStreak: profile.current_streak ?? 0,
                 lastActiveDate: profile.last_active_date ?? null,
-                stamps:
-                  stamps?.map((s: { id: string; place_id: string; place_name: string; created_at: string; city?: string | null }) => ({
-                    id: s.id,
-                    placeId: s.place_id,
-                    placeName: s.place_name,
-                    date: new Date(s.created_at).toISOString().slice(0, 10),
-                    city: s.city || undefined,
-                  })) || [],
+                stamps: !stampsError
+                  ? (stamps || []).map((s: { id: string; place_id: string; place_name: string; created_at: string; city?: string | null }) => ({
+                      id: s.id,
+                      placeId: s.place_id,
+                      placeName: s.place_name,
+                      date: new Date(s.created_at).toISOString().slice(0, 10),
+                      city: s.city || undefined,
+                    }))
+                  : prev.wallet.stamps,
               },
-              favorites:
-                favs?.map((f: { id: string; place_id: string; place_snapshot: Favorite['snapshot'] }) => ({
-                  id: f.id,
-                  placeId: f.place_id,
-                  snapshot: f.place_snapshot,
-                })) || [],
+              favorites: !favsError
+                ? (favs || []).map((f: { id: string; place_id: string; place_snapshot: Favorite['snapshot'] }) => ({
+                    id: f.id,
+                    placeId: f.place_id,
+                    snapshot: f.place_snapshot,
+                  }))
+                : prev.favorites,
               semanticProfile: profile.semantic_profile || {},
               ...(profile.current_city ? { cityMode: profile.current_city as CityMode } : {}),
             });
@@ -429,24 +435,26 @@ export const useUserStore = create<CleanUserState>()(
             }
           }
 
-          const trips = (journeyRows || []).map(mapDbUserTrip);
-          const tripEvents = sortEvents((tripRows || []).map(mapDbTripToEvent));
-          const active = pickActiveTrip(trips);
-          const budget = budgetFromTrip(active);
-          set({
-            trips,
-            tripEvents,
-            activeTrip: active,
-            tripBudget: budget,
-            ...(budget
-              ? {
-                  semanticProfile: {
-                    ...get().semanticProfile,
-                    trip_budget: budget,
-                  },
-                }
-              : {}),
-          });
+          if (!tripsError && !journeysError) {
+            const trips = (journeyRows || []).map(mapDbUserTrip);
+            const tripEvents = sortEvents((tripRows || []).map(mapDbTripToEvent));
+            const active = pickActiveTrip(trips);
+            const budget = budgetFromTrip(active);
+            set({
+              trips,
+              tripEvents,
+              activeTrip: active,
+              tripBudget: budget,
+              ...(budget
+                ? {
+                    semanticProfile: {
+                      ...get().semanticProfile,
+                      trip_budget: budget,
+                    },
+                  }
+                : {}),
+            });
+          }
 
           await get().fetchFuelHistory();
         } catch (e) {
@@ -470,7 +478,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'ADD_TRIP_EVENT',
           payload: mapEventToDbPayload(normalized, userId || undefined),
-        });
+        }, userId);
       },
 
       removeTripEvent: async (id: string) => {
@@ -480,7 +488,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'REMOVE_TRIP_EVENT',
           payload: { id },
-        });
+        }, await resolveUserId());
       },
 
       updateTripEvent: async (id: string, patch: Partial<TripEvent>) => {
@@ -505,7 +513,7 @@ export const useUserStore = create<CleanUserState>()(
           await dbService.pushToOutbox({
             type: 'UPDATE_TRIP_EVENT',
             payload: mapEventToDbPayload(updated, userId || undefined),
-          });
+          }, userId);
         }
       },
 
@@ -577,7 +585,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(trip, userId || undefined),
-        });
+        }, userId);
 
         return trip;
       },
@@ -604,7 +612,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
-        });
+        }, userId);
         AudioGraph.getInstance().playCoinSound();
       },
 
@@ -624,7 +632,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
-        });
+        }, userId);
       },
 
       resumeTrip: async (tripId) => {
@@ -672,13 +680,13 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
-        });
+        }, userId);
 
         for (const e of closedEvents.filter((ev) => ev.journeyId === id && ev.status === 'skipped')) {
           await dbService.pushToOutbox({
             type: 'UPDATE_TRIP_EVENT',
             payload: mapEventToDbPayload(e, userId || undefined),
-          });
+          }, userId);
         }
 
         // Reward via ledger RPC (idempotent, server-derived daily entitlement).
@@ -709,7 +717,7 @@ export const useUserStore = create<CleanUserState>()(
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
-        });
+        }, userId);
       },
 
       cloneStaticTrip: async (templateId, startDate) => {
@@ -757,7 +765,7 @@ export const useUserStore = create<CleanUserState>()(
           await dbService.pushToOutbox({
             type: 'ADD_TRIP_EVENT',
             payload: mapEventToDbPayload(event, userId || undefined),
-          });
+          }, userId);
         }
 
         return trip;

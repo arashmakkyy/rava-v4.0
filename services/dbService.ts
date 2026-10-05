@@ -1,16 +1,43 @@
 /**
- * IndexedDB Wrapper v2.1 - Atomic Outbox Pattern
+ * IndexedDB Wrapper v2.2 - Atomic Outbox Pattern
  * DB renamed rahnam_resilience_v3 → rava_resilience_v3 with one-time migration.
+ *
+ * v4 adds:
+ *  - `dead_letter` store: failed/quarantined actions are moved here, never silently dropped.
+ *  - Outbox items carry `userId` (owner) + `attempts` (retry count).
+ *  - A flush hook lets SyncManager start a sync right after enqueue (no import cycle).
  */
+export interface OutboxItem {
+  id: string;
+  type: string;
+  payload: any;
+  timestamp: number;
+  /** Owner at enqueue time. Legacy items may lack it -> quarantined, never assumed. */
+  userId?: string | null;
+  attempts?: number;
+}
+
+export interface DeadLetterItem extends OutboxItem {
+  deadReason: string;
+  deadAt: number;
+}
+
 class IndexedDBService {
   private dbName = 'rava_resilience_v3';
   private oldDbName = 'rahnam_resilience_v3';
-  private version = 3;
+  private version = 4;
   private stores = {
     places: 'places',
-    outbox: 'outbox'
+    outbox: 'outbox',
+    deadLetter: 'dead_letter'
   };
   private migrationPromise: Promise<void> | null = null;
+  private flushHook: (() => void) | null = null;
+
+  /** Registered once by SyncManager to flush immediately after enqueue while online. */
+  setFlushHook(hook: (() => void) | null) {
+    this.flushHook = hook;
+  }
 
   private openDb(name: string): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
@@ -22,6 +49,9 @@ class IndexedDBService {
         }
         if (!db.objectStoreNames.contains(this.stores.outbox)) {
           db.createObjectStore(this.stores.outbox, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(this.stores.deadLetter)) {
+          db.createObjectStore(this.stores.deadLetter, { keyPath: 'id' });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -161,27 +191,60 @@ class IndexedDBService {
   }
 
   // مدیریت صف آفلاین اتمیک
-  async pushToOutbox(action: { type: string; payload: any }): Promise<void> {
+  async pushToOutbox(action: { type: string; payload: any }, userId?: string | null): Promise<void> {
     const db = await this.getDB();
     const tx = db.transaction(this.stores.outbox, 'readwrite');
-    const item = {
+    const item: OutboxItem = {
       id: crypto.randomUUID(),
       ...action,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      userId: userId ?? null,
+      attempts: 0,
     };
     tx.objectStore(this.stores.outbox).add(item);
+    await new Promise<void>((resolve) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+    // Best-effort immediate flush while online (guarded against reentrancy downstream).
+    if (typeof navigator !== 'undefined' && navigator.onLine && this.flushHook) {
+      try {
+        this.flushHook();
+      } catch {
+        /* flush failures are retried on the next trigger */
+      }
+    }
   }
 
-  async getAllOutboxItems(): Promise<any[]> {
+  async getAllOutboxItems(): Promise<OutboxItem[]> {
     const db = await this.getDB();
     return new Promise((resolve) => {
       const tx = db.transaction(this.stores.outbox, 'readonly');
       const request = tx.objectStore(this.stores.outbox).getAll();
       request.onsuccess = () => {
         // مرتب‌سازی بر اساس زمان برای حفظ ترتیب وقایع سفر
-        const items = request.result.sort((a, b) => a.timestamp - b.timestamp);
+        const items = (request.result || []).sort((a, b) => a.timestamp - b.timestamp);
         resolve(items);
       };
+      request.onerror = () => resolve([]);
+    });
+  }
+
+  async updateOutboxAttempts(id: string, attempts: number): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(this.stores.outbox, 'readwrite');
+      const store = tx.objectStore(this.stores.outbox);
+      const get = store.get(id);
+      get.onsuccess = () => {
+        const item = get.result as OutboxItem | undefined;
+        if (item) {
+          item.attempts = attempts;
+          store.put(item);
+        }
+        resolve();
+      };
+      get.onerror = () => resolve();
     });
   }
 
@@ -191,6 +254,34 @@ class IndexedDBService {
       const tx = db.transaction(this.stores.outbox, 'readwrite');
       const request = tx.objectStore(this.stores.outbox).delete(id);
       request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+    });
+  }
+
+  /**
+   * Quarantine: move an item out of the replay queue WITHOUT executing it.
+   * Used for owner mismatches, legacy owner-less items, and exhausted retries.
+   * Nothing is ever silently dropped — dead letters stay inspectable on-device.
+   */
+  async moveToDeadLetter(item: OutboxItem, reason: string): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction([this.stores.outbox, this.stores.deadLetter], 'readwrite');
+      const dead: DeadLetterItem = { ...item, deadReason: reason, deadAt: Date.now() };
+      tx.objectStore(this.stores.deadLetter).put(dead);
+      tx.objectStore(this.stores.outbox).delete(item.id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
+
+  async getDeadLetterCount(): Promise<number> {
+    const db = await this.getDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(this.stores.deadLetter, 'readonly');
+      const request = tx.objectStore(this.stores.deadLetter).count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(0);
     });
   }
 }

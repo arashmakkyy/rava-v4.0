@@ -267,7 +267,7 @@ export const useAuthStore = create<AuthState>()(
           await dbService.pushToOutbox({
             type: 'FINALIZE_ONBOARDING',
             payload: { profile: profilePayload, trip: tripPayload },
-          });
+          }, user.id);
         }
 
         set({ onboardingCompleted: true, semanticProfile: semanticData });
