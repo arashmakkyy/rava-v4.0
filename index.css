@@ -1,4 +1,10 @@
-﻿@import "./styles/tokens.css";
+﻿@import "@fontsource/vazirmatn/arabic-100.css";
+@import "@fontsource/vazirmatn/arabic-400.css";
+@import "@fontsource/vazirmatn/arabic-700.css";
+@import "@fontsource/vazirmatn/arabic-900.css";
+@import "@fontsource/vazirmatn/latin-400.css";
+@import "@fontsource/vazirmatn/latin-700.css";
+@import "./styles/tokens.css";
 @import "./styles/global.css";
 @import "tailwindcss";
 @config "./tailwind.config.ts";

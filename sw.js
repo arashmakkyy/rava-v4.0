@@ -17,7 +17,6 @@ const limitCacheSize = async (name, maxItems) => {
 const STATIC_ASSETS = [
   '/',
   '/index.html',
-  'https://fonts.googleapis.com/css2?family=Vazirmatn:wght@100;400;700;900&display=swap'
 ];
 
 self.addEventListener('install', (event) => {

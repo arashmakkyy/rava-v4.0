@@ -14,3 +14,13 @@ root.render(
     <App />
   </React.StrictMode>
 );
+
+// Service worker: production only. Dev stays SW-free so HMR and fresh
+// Maps/Gemini sessions are never served stale.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('[SW] registration failed:', err);
+    });
+  });
+}

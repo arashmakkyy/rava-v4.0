@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useEffect } from 'react';
+﻿import React, { useMemo, useEffect, Suspense, lazy } from 'react';
 import { MainMap } from '../components/map/MainMap';
 import { TopBar } from '../components/layout/TopBar';
 import { BottomBar } from '../components/layout/BottomBar';
@@ -13,12 +13,20 @@ import { motion as _motion, AnimatePresence } from 'framer-motion';
 import { Camera } from 'lucide-react';
 import { AppTab } from '../types';
 
-import { Explore } from './Explore';
-import { MyTrip } from './MyTrip';
-import { Tools } from './Tools';
-import { Profile } from './Profile';
+// Tab overlays are code-split: the map shell (MainMap + MagicButton) stays in the
+// initial bundle and mounted, while Explore/Trip/Tools/Profile load on first visit.
+const Explore = lazy(() => import('./Explore').then((m) => ({ default: m.Explore })));
+const MyTrip = lazy(() => import('./MyTrip').then((m) => ({ default: m.MyTrip })));
+const Tools = lazy(() => import('./Tools').then((m) => ({ default: m.Tools })));
+const Profile = lazy(() => import('./Profile').then((m) => ({ default: m.Profile })));
 
 const motion = _motion as any;
+
+const TabFallback: React.FC = () => (
+  <div className="page-pad flex h-full items-center justify-center">
+    <div className="glass rounded-rava-xl px-6 py-4 text-rava-sm font-bold text-white/40">در حال بارگذاری…</div>
+  </div>
+);
 
 interface DashboardProps {
   defaultTab?: AppTab;
@@ -74,7 +82,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ defaultTab }) => {
               transition={{ type: 'spring', damping: 30, stiffness: 250 }}
               className="h-full w-full bg-black/70 pt-[var(--chrome-top)] pointer-events-auto backdrop-blur-xl"
             >
-              {overlayContent}
+              <Suspense fallback={<TabFallback />}>{overlayContent}</Suspense>
             </motion.div>
           )}
         </AnimatePresence>
