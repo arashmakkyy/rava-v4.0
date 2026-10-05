@@ -13,6 +13,7 @@
     "db:migrate": "node scripts/apply_migrations.mjs",
     "smoke": "node scripts/smoke_test.mjs",
     "abuse": "node scripts/abuse_test.mjs",
+    "preflight": "node scripts/preflight.mjs",
     "e2e": "playwright test"
   },
   "dependencies": {

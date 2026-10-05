@@ -94,7 +94,7 @@ export const TicketScanner: React.FC<TicketScannerProps> = ({ isOpen, onClose })
               </div>
               <div className="space-y-2 text-center">
                 <h3 className="animate-pulse text-2xl font-black text-white">در حال استخراج هوشمند...</h3>
-                <p className="text-rava-xs font-bold uppercase tracking-widest text-white/30">Powered by Gemini 2.0 Flash</p>
+                <p className="text-rava-xs font-bold tracking-widest text-white/30">تحلیل هوشمند با Gemini</p>
               </div>
             </motion.div>
           )}

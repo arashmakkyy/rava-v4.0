@@ -6,6 +6,15 @@
  *  - `dead_letter` store: failed/quarantined actions are moved here, never silently dropped.
  *  - Outbox items carry `userId` (owner) + `attempts` (retry count).
  *  - A flush hook lets SyncManager start a sync right after enqueue (no import cycle).
+ *
+ * Failure semantics (explicit, by path):
+ *  - OUTBOX WRITES (push/update/remove/dead-letter): LOUD. Rejections propagate to
+ *    the caller (syncManager/store) with action context. Never resolve-as-success.
+ *  - OUTBOX READS (getAll): LOUD. A read failure rejects — the scheduler must be
+ *    able to distinguish "queue empty" ([]) from "storage broken" (throw), and
+ *    must never treat the latter as the former.
+ *  - PLACES CACHE (get/set): best-effort by design. A cache miss/failure falls
+ *    back to network without failing the UX; staleness self-heals on next fetch.
  */
 export interface OutboxItem {
   id: string;
@@ -229,7 +238,7 @@ class IndexedDBService {
 
   async getAllOutboxItems(): Promise<OutboxItem[]> {
     const db = await this.getDB();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const tx = db.transaction(this.stores.outbox, 'readonly');
       const request = tx.objectStore(this.stores.outbox).getAll();
       request.onsuccess = () => {
@@ -237,25 +246,35 @@ class IndexedDBService {
         const items = (request.result || []).sort((a, b) => a.timestamp - b.timestamp);
         resolve(items);
       };
-      request.onerror = () => resolve([]);
+      // LOUD: [] means "empty queue". A read failure must throw, never masquerade as empty.
+      request.onerror = () => reject(
+        new Error(`[dbService] outbox read failed: ${request.error?.message || 'IndexedDB error'}`)
+      );
     });
   }
 
   async updateOutboxAttempts(id: string, attempts: number): Promise<void> {
     const db = await this.getDB();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const tx = db.transaction(this.stores.outbox, 'readwrite');
       const store = tx.objectStore(this.stores.outbox);
       const get = store.get(id);
       get.onsuccess = () => {
         const item = get.result as OutboxItem | undefined;
-        if (item) {
-          item.attempts = attempts;
-          store.put(item);
+        if (!item) {
+          reject(new Error(`[dbService] attempts update: item ${id} not found`));
+          return;
         }
-        resolve();
+        item.attempts = attempts;
+        const put = store.put(item);
+        put.onsuccess = () => resolve();
+        put.onerror = () => reject(
+          new Error(`[dbService] attempts update failed for ${id}: ${put.error?.message || 'IndexedDB error'}`)
+        );
       };
-      get.onerror = () => resolve();
+      get.onerror = () => reject(
+        new Error(`[dbService] attempts read failed for ${id}: ${get.error?.message || 'IndexedDB error'}`)
+      );
     });
   }
 
@@ -279,13 +298,20 @@ class IndexedDBService {
    */
   async moveToDeadLetter(item: OutboxItem, reason: string): Promise<void> {
     const db = await this.getDB();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const tx = db.transaction([this.stores.outbox, this.stores.deadLetter], 'readwrite');
       const dead: DeadLetterItem = { ...item, deadReason: reason, deadAt: Date.now() };
-      tx.objectStore(this.stores.deadLetter).put(dead);
+      const put = tx.objectStore(this.stores.deadLetter).put(dead);
+      put.onerror = () => {
+        console.error(`[dbService] dead-letter store failed for ${item.id} (${reason})`);
+      };
       tx.objectStore(this.stores.outbox).delete(item.id);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      // LOUD: if quarantine itself fails, the caller must know — the action is
+      // neither queued nor quarantined, and retrying blindly could double-execute.
+      tx.onerror = () => reject(
+        new Error(`[dbService] dead-letter transaction failed for ${item.id} (${reason}): ${tx.error?.message || 'IndexedDB error'}`)
+      );
     });
   }
 

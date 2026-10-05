@@ -48,6 +48,17 @@ class SyncManagerProvider {
     }
   }
 
+  /** Quarantine with a loud failure path: if even quarantine fails, stop the run. */
+  private async quarantine(action: OutboxItem, reason: string): Promise<boolean> {
+    try {
+      await dbService.moveToDeadLetter(action, reason);
+      return true;
+    } catch (err) {
+      console.error(`[Sync Manager] Quarantine FAILED for ${action.id} (${reason}) — stopping run.`, err);
+      return false;
+    }
+  }
+
   /** Owner resolution: explicit owner first, then payload-carried ids. Never assumed. */
   private ownerOf(action: OutboxItem): string | null {
     if (action.userId) return action.userId;
@@ -144,7 +155,14 @@ class SyncManagerProvider {
       // No signed-in owner -> replay nothing. Items wait for their owner's session.
       if (!currentUid) return;
 
-      const pendingActions = await dbService.getAllOutboxItems();
+      let pendingActions: OutboxItem[];
+      try {
+        pendingActions = await dbService.getAllOutboxItems();
+      } catch (err) {
+        // Storage read failure is NOT an empty queue: log loudly and retry later.
+        console.error('[Sync Manager] Outbox read failed — will retry on next trigger.', err);
+        return;
+      }
       if (pendingActions.length === 0) {
         this.clearRetryTimer();
         return;
@@ -158,12 +176,14 @@ class SyncManagerProvider {
         const owner = this.ownerOf(action);
         if (!owner) {
           console.warn(`[Sync Manager] Quarantining owner-less action ${action.id} (${action.type}).`);
-          await dbService.moveToDeadLetter(action, 'owner-unattributable');
+          const ok = await this.quarantine(action, 'owner-unattributable');
+          if (!ok) break;
           continue;
         }
         if (owner !== currentUid) {
           console.warn(`[Sync Manager] Quarantining foreign action ${action.id} (${action.type}).`);
-          await dbService.moveToDeadLetter(action, 'owner-mismatch');
+          const ok = await this.quarantine(action, 'owner-mismatch');
+          if (!ok) break;
           continue;
         }
 
@@ -171,10 +191,18 @@ class SyncManagerProvider {
           await this.executeAction(action);
           await dbService.removeFromOutbox(action.id);
         } catch (individualErr) {
+          const msg = (individualErr as Error)?.message || String(individualErr);
+          // Transport failure (lying onLine flag, captive portal, flaky radio):
+          // do NOT burn a retry attempt — just stop and wait for a later trigger.
+          if (/failed to fetch|networkerror|load failed|offline|timeout|abort/i.test(msg)) {
+            console.warn(`[Sync Manager] Transport failure on ${action.id}, retrying later (attempt not counted).`);
+            break;
+          }
           const attempts = (action.attempts ?? 0) + 1;
           console.error(`[Sync Manager] Action failed (ID: ${action.id}, attempt ${attempts}).`, individualErr);
           if (attempts >= MAX_ATTEMPTS) {
-            await dbService.moveToDeadLetter(action, `retries-exhausted:${attempts}`);
+            const ok = await this.quarantine(action, `retries-exhausted:${attempts}`);
+            if (!ok) break;
             continue;
           }
           await dbService.updateOutboxAttempts(action.id, attempts);

@@ -63,6 +63,7 @@ class SessionManager {
     if (error) {
       const status = (error as { status?: number })?.status;
       if (status === 429) throw new Error('QUOTA');
+      if (status === 402) throw new Error('INSUFFICIENT');
       throw error;
     }
     const token = (data as { token?: string })?.token;
@@ -119,6 +120,9 @@ class SessionManager {
         this.failConnect('برای گفتگو اول وارد حساب شو.');
       } else if (code === 'QUOTA') {
         this.failConnect('سهم امروز گفتگو تموم شده. فردا دوباره بیا.');
+      } else if (code === 'INSUFFICIENT') {
+        this.failConnect('سوخت راوا تموم شده. از پروفایل اعتبار دمو بگیر.');
+        useUIStore.getState().setActiveTab('profile');
       } else {
         console.error('[SessionManager] Token mint failed:', err);
         this.failConnect('توکن گفتگو صادر نشد. اتصال اینترنت رو چک کن و دوباره بزن.');

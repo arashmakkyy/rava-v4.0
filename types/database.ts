@@ -165,6 +165,7 @@ export type Database = {
           static_data: Json;
           assets: Json;
           is_premium: boolean;
+          google_place_id: string | null;
           updated_at: string;
           created_at: string;
         };
@@ -176,6 +177,7 @@ export type Database = {
           static_data?: Json;
           assets?: Json;
           is_premium?: boolean;
+          google_place_id?: string | null;
           updated_at?: string;
           created_at?: string;
         };
@@ -187,6 +189,7 @@ export type Database = {
           static_data?: Json;
           assets?: Json;
           is_premium?: boolean;
+          google_place_id?: string | null;
           updated_at?: string;
           created_at?: string;
         };
@@ -430,6 +433,8 @@ export type Database = {
           place_id: string;
           place_name: string;
           city: string | null;
+          claimed_lat: number | null;
+          claimed_lng: number | null;
           created_at: string;
         };
         Insert: {
@@ -438,6 +443,8 @@ export type Database = {
           place_id: string;
           place_name: string;
           city?: string | null;
+          claimed_lat?: number | null;
+          claimed_lng?: number | null;
           created_at?: string;
         };
         Update: {
@@ -446,6 +453,8 @@ export type Database = {
           place_id?: string;
           place_name?: string;
           city?: string | null;
+          claimed_lat?: number | null;
+          claimed_lng?: number | null;
           created_at?: string;
         };
         Relationships: [
@@ -740,6 +749,8 @@ export type Database = {
           proof_image_url: string | null;
           ai_verification_status: string | null;
           ai_confidence_score: number | null;
+          report_date: string | null;
+          proof_hash: string | null;
           created_at: string;
         };
         Insert: {
@@ -752,6 +763,8 @@ export type Database = {
           proof_image_url?: string | null;
           ai_verification_status?: string | null;
           ai_confidence_score?: number | null;
+          report_date?: string | null;
+          proof_hash?: string | null;
           created_at?: string;
         };
         Update: {
@@ -764,6 +777,56 @@ export type Database = {
           proof_image_url?: string | null;
           ai_verification_status?: string | null;
           ai_confidence_score?: number | null;
+          report_date?: string | null;
+          proof_hash?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      ai_usage: {
+        Row: {
+          user_id: string;
+          usage_date: string;
+          live_mints: number;
+          proxy_calls: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          usage_date?: string;
+          live_mints?: number;
+          proxy_calls?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          usage_date?: string;
+          live_mints?: number;
+          proxy_calls?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      ticket_receipts: {
+        Row: {
+          user_id: string;
+          image_path: string;
+          trip_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          user_id: string;
+          image_path: string;
+          trip_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          image_path?: string;
+          trip_id?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -777,6 +840,8 @@ export type Database = {
           px_place_id: string;
           px_place_name: string;
           px_city: string;
+          px_lat: number | null;
+          px_lng: number | null;
         };
         Returns: undefined;
       };
@@ -814,9 +879,24 @@ export type Database = {
         Args: {
           px_transaction_id: string;
           px_reward_type: string;
-          px_reference_id?: string | null;
         };
         Returns: Json;
+      };
+      claim_demo_credit: {
+        Args: { px_transaction_id: string };
+        Returns: Json;
+      };
+      finalize_price_verification: {
+        Args: { px_report_id: string; px_verified: boolean; px_confidence?: number | null };
+        Returns: Json;
+      };
+      consume_live_mint: {
+        Args: { px_max_per_day: number };
+        Returns: boolean;
+      };
+      consume_proxy_call: {
+        Args: { px_max_per_day: number };
+        Returns: boolean;
       };
       record_daily_activity: {
         Args: { px_date?: string };
@@ -845,6 +925,8 @@ export type Database = {
           lng: number;
           user_name: string;
           created_at: string;
+          is_verified: boolean;
+          is_mine: boolean;
         }[];
       };
     };

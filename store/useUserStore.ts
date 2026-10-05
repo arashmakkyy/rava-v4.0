@@ -56,9 +56,26 @@ interface CleanUserState extends Omit<
   }) => Promise<TripBudgetSnapshot | null>;
 }
 
+/**
+ * Owner id for outbox items. Offline-safe by design: reads the LOCAL session
+ * first (no network), so offline actions are still attributed to their owner
+ * and replay after reconnect. Falls back to a server check only when no
+ * local session exists. This id is LOCAL ISOLATION METADATA only — real
+ * authorization always happens server-side (RLS / auth.uid()).
+ */
 async function resolveUserId(): Promise<string | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  return user?.id ?? null;
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user?.id) return session.user.id;
+  } catch {
+    /* storage read failed — try server below */
+  }
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function pickActiveTrip(trips: Trip[]): Trip | null {
@@ -211,21 +228,29 @@ export const useUserStore = create<CleanUserState>()(
         if (!seconds || seconds <= 0) return;
         const hours = seconds / 3600.0;
         const transactionId = crypto.randomUUID();
-        const currentBalance = get().wallet.balance;
+        const prevBalance = get().wallet.balance;
         // Optimistic hours deduct; reconcile via syncWithCloud after outbox
         set((state) => ({
-          wallet: { ...state.wallet, balance: Math.max(0, currentBalance - hours) },
+          wallet: { ...state.wallet, balance: Math.max(0, prevBalance - hours) },
         }));
-        const userId = await resolveUserId();
-        await dbService.pushToOutbox({
-          type: 'DEDUCT_FUEL',
-          payload: {
-            seconds,
-            reason,
-            // Stable id — syncManager must reuse on retry (never regenerate)
-            transaction_id: transactionId,
-          },
-        }, userId);
+        try {
+          const userId = await resolveUserId();
+          await dbService.pushToOutbox({
+            type: 'DEDUCT_FUEL',
+            payload: {
+              seconds,
+              reason,
+              // Stable id — syncManager must reuse on retry (never regenerate)
+              transaction_id: transactionId,
+            },
+          }, userId);
+        } catch (err) {
+          // Enqueue failed: roll the optimistic deduct back so the UI never
+          // shows fuel as spent for an action that will never sync.
+          set((state) => ({ wallet: { ...state.wallet, balance: prevBalance } }));
+          console.error('[deductFuel] outbox enqueue failed, reverted:', err);
+          throw err;
+        }
       },
 
       claimReward: async (type: RewardEventType, transactionId?: string) => {
@@ -239,6 +264,8 @@ export const useUserStore = create<CleanUserState>()(
           achievement: { fuel: 0.1, xp: 150 },
         };
         const hint = optimistic[type];
+        const prevBalance = get().wallet.balance;
+        const prevXp = get().wallet.xp;
         if (hint) {
           set((state) => ({
             wallet: {
@@ -248,13 +275,21 @@ export const useUserStore = create<CleanUserState>()(
             },
           }));
         }
-        await dbService.pushToOutbox({
-          type: 'CLAIM_REWARD',
-          payload: {
-            px_transaction_id: txId,
-            px_reward_type: type,
-          },
-        }, await resolveUserId());
+        try {
+          await dbService.pushToOutbox({
+            type: 'CLAIM_REWARD',
+            payload: {
+              px_transaction_id: txId,
+              px_reward_type: type,
+            },
+          }, await resolveUserId());
+        } catch (err) {
+          if (hint) {
+            set((state) => ({ wallet: { ...state.wallet, balance: prevBalance, xp: prevXp } }));
+          }
+          console.error('[claimReward] outbox enqueue failed, reverted:', err);
+          throw err;
+        }
       },
 
       recordStreak: async () => {
@@ -340,30 +375,38 @@ export const useUserStore = create<CleanUserState>()(
         if (isStamping || wallet.stamps.some((s) => s.placeId === stamp.placeId)) return;
 
         set({ isStamping: true });
+        const prevWallet = get().wallet;
 
-        set((state) => ({
-          wallet: {
-            ...state.wallet,
-            stamps: [stamp, ...state.wallet.stamps],
-            balance: state.wallet.balance + 0.1,
-            xp: state.wallet.xp + 50,
-          },
-        }));
+        try {
+          set((state) => ({
+            wallet: {
+              ...state.wallet,
+              stamps: [stamp, ...state.wallet.stamps],
+              balance: state.wallet.balance + 0.1,
+              xp: state.wallet.xp + 50,
+            },
+          }));
 
-        const transactionId = crypto.randomUUID();
-        await dbService.pushToOutbox({
-          type: 'PROCESS_STAMP',
-          payload: {
-            px_transaction_id: transactionId,
-            px_place_id: stamp.placeId,
-            px_place_name: stamp.placeName,
-            px_city: cityMode || 'Unknown',
-            px_lat: stamp.lat ?? null,
-            px_lng: stamp.lng ?? null,
-          },
-        }, await resolveUserId());
-
-        set({ isStamping: false });
+          const transactionId = crypto.randomUUID();
+          await dbService.pushToOutbox({
+            type: 'PROCESS_STAMP',
+            payload: {
+              px_transaction_id: transactionId,
+              px_place_id: stamp.placeId,
+              px_place_name: stamp.placeName,
+              px_city: cityMode || 'Unknown',
+              px_lat: stamp.lat ?? null,
+              px_lng: stamp.lng ?? null,
+            },
+          }, await resolveUserId());
+        } catch (err) {
+          // Enqueue failed: revert so no fake stamp/reward lingers in the UI.
+          set({ wallet: prevWallet });
+          console.error('[addStamp] outbox enqueue failed, reverted:', err);
+          throw err;
+        } finally {
+          set({ isStamping: false });
+        }
       },
 
       syncWithCloud: async () => {
@@ -479,50 +522,46 @@ export const useUserStore = create<CleanUserState>()(
           sequence: event.sequence ?? get().tripEvents.length,
           journeyId: event.journeyId || get().activeTrip?.id,
         };
-        set((state) => ({
-          tripEvents: sortEvents([...state.tripEvents, normalized]),
-        }));
+        // Enqueue FIRST: if IndexedDB fails, nothing optimistic exists to roll back.
         const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'ADD_TRIP_EVENT',
           payload: mapEventToDbPayload(normalized, userId || undefined),
         }, userId);
+        set((state) => ({
+          tripEvents: sortEvents([...state.tripEvents, normalized]),
+        }));
       },
 
       removeTripEvent: async (id: string) => {
-        set((state) => ({
-          tripEvents: state.tripEvents.filter((e) => e.id !== id),
-        }));
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
         await dbService.pushToOutbox({
           type: 'REMOVE_TRIP_EVENT',
           payload: { id },
         }, await resolveUserId());
+        set((state) => ({
+          tripEvents: state.tripEvents.filter((e) => e.id !== id),
+        }));
       },
 
       updateTripEvent: async (id: string, patch: Partial<TripEvent>) => {
-        let updated: TripEvent | null = null;
-        set((state) => {
-          const tripEvents = sortEvents(
-            state.tripEvents.map((e) => {
-              if (e.id !== id) return e;
-              updated = {
-                ...e,
-                ...patch,
-                status: normalizeActivityStatus(patch.status ?? e.status),
-                details: { ...e.details, ...patch.details },
-              };
-              return updated!;
-            })
-          );
-          return { tripEvents };
-        });
-        if (updated) {
-          const userId = await resolveUserId();
-          await dbService.pushToOutbox({
-            type: 'UPDATE_TRIP_EVENT',
-            payload: mapEventToDbPayload(updated, userId || undefined),
-          }, userId);
-        }
+        const current = get().tripEvents.find((e) => e.id === id);
+        if (!current) return;
+        const updated: TripEvent = {
+          ...current,
+          ...patch,
+          status: normalizeActivityStatus(patch.status ?? current.status),
+          details: { ...current.details, ...patch.details },
+        };
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
+        const userId = await resolveUserId();
+        await dbService.pushToOutbox({
+          type: 'UPDATE_TRIP_EVENT',
+          payload: mapEventToDbPayload(updated, userId || undefined),
+        }, userId);
+        set((state) => ({
+          tripEvents: sortEvents(state.tripEvents.map((e) => (e.id === id ? updated : e))),
+        }));
       },
 
       startActivity: async (id: string) => {
@@ -568,8 +607,7 @@ export const useUserStore = create<CleanUserState>()(
       },
 
       createTrip: async (draft) => {
-        const userId = await resolveUserId();
-        const trip: Trip = {
+        const updated: Trip = {
           id: crypto.randomUUID(),
           city: draft.city,
           title: draft.title,
@@ -584,18 +622,20 @@ export const useUserStore = create<CleanUserState>()(
           updatedAt: new Date().toISOString(),
         };
 
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
+        const userId = await resolveUserId();
+        await dbService.pushToOutbox({
+          type: 'UPSERT_USER_TRIP',
+          payload: mapTripToDbPayload(updated, userId || undefined),
+        }, userId);
+
         set((state) => ({
-          trips: [trip, ...state.trips],
-          activeTrip: trip,
+          trips: [updated, ...state.trips],
+          activeTrip: updated,
           ...(draft.city ? { cityMode: draft.city } : {}),
         }));
 
-        await dbService.pushToOutbox({
-          type: 'UPSERT_USER_TRIP',
-          payload: mapTripToDbPayload(trip, userId || undefined),
-        }, userId);
-
-        return trip;
+        return updated;
       },
 
       startTrip: async (tripId) => {
@@ -610,17 +650,19 @@ export const useUserStore = create<CleanUserState>()(
           status: 'active',
           updatedAt: new Date().toISOString(),
         };
-        set((state) => ({
-          trips: state.trips.map((t) => (t.id === id ? updated : t)),
-          activeTrip: updated,
-          ...(updated.city ? { cityMode: updated.city } : {}),
-        }));
 
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
         const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
         }, userId);
+
+        set((state) => ({
+          trips: state.trips.map((t) => (t.id === id ? updated : t)),
+          activeTrip: updated,
+          ...(updated.city ? { cityMode: updated.city } : {}),
+        }));
         AudioGraph.getInstance().playCoinSound();
       },
 
@@ -632,15 +674,18 @@ export const useUserStore = create<CleanUserState>()(
         if (!trip || trip.status !== 'active') return;
 
         const updated: Trip = { ...trip, status: 'paused', updatedAt: new Date().toISOString() };
-        set((state) => ({
-          trips: state.trips.map((t) => (t.id === id ? updated : t)),
-          activeTrip: updated,
-        }));
+
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
         const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
         }, userId);
+
+        set((state) => ({
+          trips: state.trips.map((t) => (t.id === id ? updated : t)),
+          activeTrip: updated,
+        }));
       },
 
       resumeTrip: async (tripId) => {
@@ -678,12 +723,9 @@ export const useUserStore = create<CleanUserState>()(
             : e
         );
 
-        set((state) => ({
-          trips: state.trips.map((t) => (t.id === id ? updated : t)),
-          activeTrip: pickActiveTrip(state.trips.map((t) => (t.id === id ? updated : t))),
-          tripEvents: closedEvents,
-        }));
-
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
+        // (claimReward below has its own push; if it throws, the trip updates above
+        // are already queued and will reconcile on next sync — no silent loss.)
         const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
@@ -696,6 +738,12 @@ export const useUserStore = create<CleanUserState>()(
             payload: mapEventToDbPayload(e, userId || undefined),
           }, userId);
         }
+
+        set((state) => ({
+          trips: state.trips.map((t) => (t.id === id ? updated : t)),
+          activeTrip: pickActiveTrip(state.trips.map((t) => (t.id === id ? updated : t))),
+          tripEvents: closedEvents,
+        }));
 
         // Reward via ledger RPC (idempotent, server-derived daily entitlement).
         await get().claimReward('daily_itinerary');
@@ -716,16 +764,18 @@ export const useUserStore = create<CleanUserState>()(
           updatedAt: new Date().toISOString(),
         };
         const nextTrips = trips.map((t) => (t.id === id ? updated : t));
-        set({
-          trips: nextTrips,
-          activeTrip: pickActiveTrip(nextTrips.filter((t) => t.id !== id || t.status !== 'cancelled')),
-        });
 
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
         const userId = await resolveUserId();
         await dbService.pushToOutbox({
           type: 'UPSERT_USER_TRIP',
           payload: mapTripToDbPayload(updated, userId || undefined),
         }, userId);
+
+        set({
+          trips: nextTrips,
+          activeTrip: pickActiveTrip(nextTrips.filter((t) => t.id !== id || t.status !== 'cancelled')),
+        });
       },
 
       cloneStaticTrip: async (templateId, startDate) => {
@@ -764,10 +814,7 @@ export const useUserStore = create<CleanUserState>()(
           };
         });
 
-        set((state) => ({
-          tripEvents: sortEvents([...state.tripEvents, ...events]),
-        }));
-
+        // Enqueue FIRST so an IDB failure leaves local state untouched (retryable).
         const userId = await resolveUserId();
         for (const event of events) {
           await dbService.pushToOutbox({
@@ -775,6 +822,10 @@ export const useUserStore = create<CleanUserState>()(
             payload: mapEventToDbPayload(event, userId || undefined),
           }, userId);
         }
+
+        set((state) => ({
+          tripEvents: sortEvents([...state.tripEvents, ...events]),
+        }));
 
         return trip;
       },

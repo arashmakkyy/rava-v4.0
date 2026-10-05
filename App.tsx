@@ -36,6 +36,9 @@ const App: React.FC = () => {
     if (user) {
       subscribeToUpdates();
       syncWithCloud();
+      // Replay own outbox (owner-gated inside; no-op while offline or logged out).
+      // Covers offline reloads where init() ran before the session was restored.
+      syncManager.processOutbox();
     }
   }, [user]);
 
