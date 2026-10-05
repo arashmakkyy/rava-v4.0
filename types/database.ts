@@ -898,6 +898,18 @@ export type Database = {
         Args: { px_max_per_day: number };
         Returns: boolean;
       };
+      acquire_live_lease: {
+        Args: { px_user_id: string };
+        Returns: Json;
+      };
+      refund_live_lease: {
+        Args: { px_lease_id: string };
+        Returns: Json;
+      };
+      claim_price_attempt: {
+        Args: { px_report_id: string; px_max_attempts_per_day: number };
+        Returns: Json;
+      };
       record_daily_activity: {
         Args: { px_date?: string };
         Returns: Json;
@@ -927,6 +939,37 @@ export type Database = {
           created_at: string;
           is_verified: boolean;
           is_mine: boolean;
+        }[];
+      };
+      search_nearby_places: {
+        Args: { px_lat: number; px_lng: number; px_radius?: number; px_mood?: string | null };
+        Returns: {
+          id: string;
+          name: string;
+          lat: number;
+          lng: number;
+          category: string;
+          vibe_summary: string | null;
+          price_level: number | null;
+          image_url: string | null;
+        }[];
+      };
+      get_city_attractions: {
+        Args: { city_name: string };
+        Returns: {
+          place_id: string;
+          name: string;
+          lat: number;
+          lng: number;
+          category: string;
+          description: string | null;
+          address: string | null;
+          image: string | null;
+          is_premium: boolean;
+          rating: number | null;
+          price_range: number | null;
+          tags: string[];
+          name_local: string | null;
         }[];
       };
     };

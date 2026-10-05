@@ -13,7 +13,9 @@ import {
   TripLifecycleStatus,
   TripBudgetSnapshot,
   RewardEventType,
+  SemanticProfile,
 } from '../types';
+import type { Json } from '../types/database';
 import { supabase } from '../services/supabaseClient';
 import { useUIStore } from './useUIStore';
 import { AudioGraph } from '../services/audioGraph';
@@ -316,7 +318,8 @@ export const useUserStore = create<CleanUserState>()(
           return null;
         }
 
-        const snap = data as TripBudgetSnapshot;
+        // RPC contract returns exactly this shape (single source: update_trip_budget).
+        const snap = data as unknown as TripBudgetSnapshot;
         set((state) => ({
           tripBudget: snap,
           semanticProfile: { ...state.semanticProfile, trip_budget: snap },
@@ -441,28 +444,31 @@ export const useUserStore = create<CleanUserState>()(
               wallet: {
                 balance: profile.wallet_balance,
                 xp: profile.xp_level,
-                referralCode: profile.referral_code,
+                referralCode: profile.referral_code ?? undefined,
                 isReferred: !!profile.referred_by,
                 currentStreak: profile.current_streak ?? 0,
-                lastActiveDate: profile.last_active_date ?? null,
+                lastActiveDate: profile.last_active_date ?? undefined,
                 stamps: !stampsError
                   ? (stamps || []).map((s: { id: string; place_id: string; place_name: string; created_at: string; city?: string | null }) => ({
                       id: s.id,
                       placeId: s.place_id,
                       placeName: s.place_name,
                       date: new Date(s.created_at).toISOString().slice(0, 10),
-                      city: s.city || undefined,
+                      city: typeof s.city === 'string' ? s.city : undefined,
                     }))
                   : prev.wallet.stamps,
               },
               favorites: !favsError
-                ? (favs || []).map((f: { id: string; place_id: string; place_snapshot: Favorite['snapshot'] }) => ({
+                ? (favs || []).map((f: { id: string; place_id: string; place_snapshot: Json }) => ({
                     id: f.id,
                     placeId: f.place_id,
-                    snapshot: f.place_snapshot,
+                    // Written by toggleFavorite from POI fields; read back as-is.
+                    snapshot: f.place_snapshot as Favorite['snapshot'],
                   }))
                 : prev.favorites,
-              semanticProfile: profile.semantic_profile || {},
+              // Written through toJson() by every client path, so the JSONB read
+              // back is SemanticProfile-shaped by construction.
+              semanticProfile: (profile.semantic_profile || {}) as SemanticProfile,
               // Tehran is not a selectable MVP city (no curated pack/map coverage).
               // Legacy Tehran profiles are coerced to unset so the user re-picks
               // Istanbul/Dubai via the city picker instead of falling back to Dubai silently.
@@ -477,7 +483,8 @@ export const useUserStore = create<CleanUserState>()(
             try {
               const { useAuthStore } = await import('./useAuthStore');
               useAuthStore.setState({
-                semanticProfile: profile.semantic_profile || {},
+                // Same construction guarantee as above (toJson writes).
+                semanticProfile: (profile.semantic_profile || {}) as SemanticProfile,
                 onboardingCompleted:
                   profile.onboarding_completed ?? useAuthStore.getState().onboardingCompleted,
               });

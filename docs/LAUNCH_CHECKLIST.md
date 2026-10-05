@@ -109,6 +109,10 @@ node scripts/fetch_places.mjs --city Istanbul --apply    # needs GOOGLE_PLACES_A
 
 Automated + browser results: see [`docs/SMOKE_TEST_REPORT.md`](./SMOKE_TEST_REPORT.md).
 
+- `npm run typecheck` + `npm run typecheck:edge` + `npm run build` — green gates (frontend 400+ files, all 5 Edge Functions)
+- `npx playwright test` — 3 boot tests green; auth/outbox suites skip honestly without `E2E_EMAIL`/`E2E_PASSWORD`
+- `npm run abuse` / `npm run smoke` / `node scripts/preflight.mjs` — require live credentials (run post-apply, pre-staging)
+
 - [x] Sign up → email confirm → onboarding → dashboard *(API + UI; onboarding race fixed)*
 - [x] Login / logout / session recovery *(API + UI login/session)*
 - [x] Forgot password email *(API recover accepted; needs production Site URL for real delivery)*

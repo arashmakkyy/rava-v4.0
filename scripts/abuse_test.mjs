@@ -360,28 +360,22 @@ async function main() {
       }
     }
 
-    // A18: parallel live-lease mints never exceed the real balance.
+    // A18: lease RPCs are NOT directly callable — browser must go through the
+    // minter Edge (service-authorized). Direct acquire/close attempts fail closed.
     {
-      // Drain A to ~0.1h first (deduct is the honest client path).
-      const start = await profileOf(A.token);
-      const drain = Math.max(0, (Number(start?.wallet_balance) || 0) * 3600 - 360);
-      if (drain > 0) {
-        await rpc('deduct_fuel', { px_seconds: drain, px_reason: 'abuse setup', px_transaction_id: randomUUID() }, A.token);
-      }
       const before = await profileOf(A.token);
-      const mint = () => rest('/rest/v1/rpc/acquire_live_lease', {
+      const acq = await rest('/rest/v1/rpc/acquire_live_lease', {
         method: 'POST', token: A.token,
-        body: { px_max_minutes: 15, px_max_mints_per_day: 10 },
+        body: { px_user_id: A.id },
       });
-      const [m1, m2] = await Promise.all([mint(), mint()]);
-      const okCount = [m1.json?.ok === true, m2.json?.ok === true].filter(Boolean).length;
+      const closed = await rest('/rest/v1/rpc/refund_live_lease', {
+        method: 'POST', token: A.token,
+        body: { px_lease_id: randomUUID() },
+      });
       const after = await profileOf(A.token);
-      const mins = [m1.json?.minutes || 0, m2.json?.minutes || 0];
-      const grantedValue = (mins[0] + mins[1]) / 60;
-      const spent = Number(before?.wallet_balance || 0) - Number(after?.wallet_balance || 0);
-      // At most one full lease from dust; never negative; never over-spent.
-      const bounded = okCount <= 1 && Number(after?.wallet_balance || 0) >= 0 && spent <= Number(before?.wallet_balance || 0) + 1e-9;
-      record('A18: parallel mints bounded by balance', !!bounded, `ok=${okCount} mins=${mins} spent=${spent}`);
+      const bothDenied = !acq.res.ok && !closed.res.ok;
+      const untouched = Number(after?.wallet_balance || 0) === Number(before?.wallet_balance || 0);
+      record('A18: lease RPCs reject direct browser calls, wallet untouched', !!bothDenied && !!untouched, `acquire=${acq.res.status} refund=${closed.res.status}`);
     }
 
     // A7: finalize_price_verification on unknown report errors closed (shape check).

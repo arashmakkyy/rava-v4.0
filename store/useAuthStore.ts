@@ -5,6 +5,7 @@ import { CityMode, SemanticProfile } from '../types';
 import { dbService } from '../services/dbService';
 import { useUserStore } from './useUserStore';
 import { migrateLocalStorageKey } from '../utils/storageMigration';
+import { toJson } from '../utils/jsonParser';
 
 migrateLocalStorageKey('rahnam-auth-storage-v3', 'rava-auth-storage-v3');
 
@@ -242,17 +243,15 @@ export const useAuthStore = create<AuthState>()(
           status: 'upcoming' as const,
         };
 
-        const profilePayload = {
-          id: user.id,
-          current_city: data.city,
-          semantic_profile: semanticData,
-          onboarding_completed: true,
-        };
-
         // Explicit UPDATE (never upsert): the signup trigger guarantees the row
         // exists, and UPDATE touches only allowlisted user-owned columns.
         // `id` is intentionally NOT in the SET body (not updatable by clients).
-        const { id: _profileId, ...profileUpdate } = profilePayload;
+        const profileUpdate = {
+          current_city: data.city,
+          semantic_profile: toJson(semanticData),
+          onboarding_completed: true,
+        };
+        const profilePayload = { id: user.id, ...profileUpdate };
 
         // Persist profile FIRST so hydrateFromProfile (triggered by updateUser)
         // cannot race and reset onboardingCompleted back to false.
@@ -312,7 +311,7 @@ export const useAuthStore = create<AuthState>()(
         set({ semanticProfile: newProfile });
         const { error } = await supabase
           .from('profiles')
-          .update({ semantic_profile: newProfile })
+          .update({ semantic_profile: toJson(newProfile) })
           .eq('id', user.id);
         if (error) set({ semanticProfile: prev });
       },
@@ -334,7 +333,7 @@ export const useAuthStore = create<AuthState>()(
           });
           if (error) throw error;
 
-          const profileUpdates: Record<string, string> = {};
+          const profileUpdates: { username?: string; avatar_url?: string } = {};
           if (updates.username) profileUpdates.username = updates.username;
           if (updates.avatar_url) profileUpdates.avatar_url = updates.avatar_url;
 
@@ -367,7 +366,7 @@ export const useAuthStore = create<AuthState>()(
 
         const { error } = await supabase
           .from('profiles')
-          .update({ semantic_profile: newProfile })
+          .update({ semantic_profile: toJson(newProfile) })
           .eq('id', user.id);
         if (error) set({ semanticProfile: prev });
       },
@@ -385,7 +384,7 @@ export const useAuthStore = create<AuthState>()(
 
         const { error } = await supabase
           .from('profiles')
-          .update({ semantic_profile: newProfile })
+          .update({ semantic_profile: toJson(newProfile) })
           .eq('id', user.id);
         if (error) set({ semanticProfile: prev });
       },

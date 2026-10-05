@@ -15,10 +15,8 @@ const corsHeaders = {
 // value — if mint/connect fails on version mismatch, flip this ONE constant, not call sites.
 const LIVE_API_VERSION = 'v1beta';
 
-// Lease bounds (authoritative values live in acquire_live_lease; these are the
-// request caps for a single mint — the server may grant less).
-const MAX_LEASE_MINUTES = 15;
-const MAX_LIVE_MINTS_PER_DAY = 10;
+// Lease bounds live INSIDE acquire_live_lease (server constants, uncallable by
+// clients). The minter passes only identity; it never forwards policy values.
 const NEW_SESSION_WINDOW_SECONDS = 90;
 // Live model is locked server-side here AND mirrored in the client sessionManager.
 // Revalidate against current docs before rotating (B0 behavioral probe decides).
@@ -47,7 +45,10 @@ serve(async (req) => {
       });
     }
 
-    // User-scoped client: acquire_live_lease runs as the caller (auth.uid() works).
+    // User-scoped client: validates the end-user JWT (identity binding).
+    // Lease RPCs below run on a SERVICE client with an explicit user id and are
+    // revoked from every client role, so the browser can never touch leases
+    // directly — all policy (duration, quota, rate) is server-owned.
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
@@ -62,9 +63,13 @@ serve(async (req) => {
       });
     }
 
-    const { data: lease, error: leaseError } = await supabase.rpc('acquire_live_lease', {
-      px_max_minutes: MAX_LEASE_MINUTES,
-      px_max_mints_per_day: MAX_LIVE_MINTS_PER_DAY,
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
+    const { data: lease, error: leaseError } = await admin.rpc('acquire_live_lease', {
+      px_user_id: user.id,
     });
     if (leaseError) throw leaseError;
     if (!lease?.ok) {
@@ -109,8 +114,9 @@ serve(async (req) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     } catch (mintErr) {
-      // Mint failed AFTER debiting: refund the lease in full (idempotent).
-      await supabase.rpc('close_live_lease', { px_lease_id: leaseId, px_actual_seconds: 0 });
+      // Mint failed AFTER debiting: full refund via the service-only path
+      // (idempotent; the browser has no refund capability at all).
+      await admin.rpc('refund_live_lease', { px_lease_id: leaseId });
       throw mintErr;
     }
   } catch (err: any) {

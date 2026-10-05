@@ -125,15 +125,19 @@ serve(async (req) => {
       .limit(1);
     const { error: hashError } = await supabase.from('price_reports').update({ proof_hash: proofHash }).eq('id', record.id);
     if (hashError) {
-      // Almost certainly the unique rail firing under a concurrent same-proof
-      // race: another worker claimed this hash first. Never ignore it — treat
-      // as duplicate (fail closed, no Gemini, no quota consumed).
-      await supabase.rpc('finalize_price_verification', {
-        px_report_id: record.id, px_verified: false, px_confidence: 0,
-      });
-      return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: 'duplicate-proof-race' } }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      // ONLY a real unique violation means "another worker claimed this proof".
+      // Permission/transport/schema errors must NOT masquerade as duplicates:
+      // they throw, the webhook retries, and nothing is falsely finalized.
+      const code = (hashError as { code?: string })?.code;
+      if (code === '23505') {
+        await supabase.rpc('finalize_price_verification', {
+          px_report_id: record.id, px_verified: false, px_confidence: 0,
+        });
+        return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: 'duplicate-proof-race' } }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      throw hashError;
     }
     if (dupes && dupes.length > 0) {
       await supabase.rpc('finalize_price_verification', {

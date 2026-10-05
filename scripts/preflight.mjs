@@ -1,153 +1,198 @@
 /**
- * RAVA PREFLIGHT — read-only production data check before applying
- * migrations 10-15. NEVER writes. Exits 1 on would-break-apply conditions.
+ * RAVA PREFLIGHT — production migration gate (read-only against the DB).
  *
- * Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (read-only usage here).
- * Run:  node scripts/preflight.mjs
+ * Usage:
+ *   node scripts/preflight.mjs --self-test   # no credentials needed; synthetic
+ *                                            # breaking + clean fixtures must
+ *                                            # exit 1 and 0 respectively.
+ *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node scripts/preflight.mjs
+ *                                            # full-table live gate. Any
+ *                                            # migration-breaking condition
+ *                                            # exits non-zero. WARN is reserved
+ *                                            # for advisory issues ONLY.
  *
- * Checks:
- *  P1 duplicate reward entitlements that would violate uq_reward_entitlement
- *  P2 duplicate (user, place, item, day) price reports (uq_price_report_entitlement)
- *  P3 byte-identical proof reuse per user (uq_price_proof_per_user proxy)
- *  P4 NULL/empty item_name rows (migration backfills them — informational)
- *  P5 place_ids matching NEITHER attractions NOR places_cache
- *     (validates the migration-15 identity decision with real data)
+ * Design: every check is a PURE function over fetched rows (evaluate* below),
+ * so --self-test exercises the EXACT same code path as the live gate —
+ * no mock theater, no comment-only SQL.
  *
- * Exact GROUP BY checks for the new UNIQUE indexes (run once in the SQL editor,
- * read-only, pre-apply — must return zero rows):
+ * Blocking (FAIL) conditions — each would fail migrations 10–16 at apply:
+ *  F1 duplicate reward entitlement rows for uq_reward_entitlement
+ *  F2 duplicate (user, place, item, day) rows for uq_price_report_entitlement
+ *  F3 duplicate (user, proof_hash) rows for uq_price_proof_per_user
+ *  F4 NULL/empty item_name rows (migration sets NOT NULL)
+ *  F5 NULL report_date rows that created_at cannot backfill (migration sets NOT NULL)
  *
- *  -- uq_reward_entitlement conflicts:
- *  SELECT user_id, reward_type, reference_id, COUNT(*)
- *  FROM reward_ledger
- *  WHERE reward_type IN ('daily_itinerary','profile_complete','topup_demo')
- *    AND reference_id IS NOT NULL
- *  GROUP BY 1,2,3 HAVING COUNT(*) > 1;
- *
- *  -- uq_price_report_entitlement conflicts:
+ * Exact GROUP BY equivalents (for the SQL editor, informational):
+ *  SELECT user_id, reward_type, reference_id, COUNT(*) FROM reward_ledger
+ *   WHERE reward_type IN ('daily_itinerary','profile_complete','topup_demo')
+ *     AND reference_id IS NOT NULL GROUP BY 1,2,3 HAVING COUNT(*) > 1;
  *  SELECT user_id, place_id, lower(btrim(item_name)), COALESCE(report_date, created_at::date), COUNT(*)
- *  FROM price_reports
- *  GROUP BY 1,2,3,4 HAVING COUNT(*) > 1;
+ *   FROM price_reports GROUP BY 1,2,3,4 HAVING COUNT(*) > 1;
+ *  SELECT user_id, proof_hash, COUNT(*) FROM price_reports
+ *   WHERE proof_hash IS NOT NULL GROUP BY 1,2 HAVING COUNT(*) > 1;
  */
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!SUPABASE_URL || !SERVICE) {
-  console.error('Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY (read-only use)');
-  process.exit(2);
+const TYPES = ['daily_itinerary', 'profile_complete', 'topup_demo'];
+
+function entitlementKey(r) {
+  return `${r.user_id}|${r.reward_type}|${r.reference_id}`;
 }
 
-const headers = {
-  apikey: SERVICE,
-  Authorization: `Bearer ${SERVICE}`,
-  'Content-Type': 'application/json',
-};
+function priceKey(r) {
+  const day = r.report_date || String(r.created_at || '').slice(0, 10);
+  return `${r.user_id}|${r.place_id}|${String(r.item_name || '').toLowerCase().trim()}|${day}`;
+}
 
-async function rest(path) {
-  const res = await fetch(`${SUPABASE_URL}${path}`, { headers });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = text;
+/** Pure evaluators — shared by live gate and self-test. */
+export function evaluateRewardEntitlements(rows) {
+  const seen = new Map();
+  const dupGroups = [];
+  for (const r of rows || []) {
+    if (!TYPES.includes(r.reward_type) || r.reference_id == null) continue;
+    const k = entitlementKey(r);
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    if (n === 2) dupGroups.push(k);
   }
-  return { res, json };
+  return dupGroups;
 }
 
-const findings = [];
-function check(name, level, detail) {
-  findings.push({ name, level, detail });
-  console.log(`[${level}] ${name}${detail ? ' — ' + detail : ''}`);
-}
-
-async function main() {
-  console.log('\n=== RAVA PREFLIGHT (read-only) ===\n');
-
-  // P4: NULL/empty item names (migration 15 backfills; count must be known).
-  {
-    const { res, json } = await rest(
-      "/rest/v1/price_reports?select=id&or=(item_name.is.null,item_name.eq.)"
-    );
-    if (!res.ok) {
-      check('P4 item_name null/empty count', 'FAIL', `query failed: ${res.status}`);
-    } else {
-      const n = Array.isArray(json) ? json.length : 0;
-      check('P4 item_name null/empty rows (will be backfilled)', n > 0 ? 'WARN' : 'PASS', `${n} rows`);
-    }
+export function evaluatePriceEntitlements(rows) {
+  const seen = new Map();
+  const dupGroups = [];
+  for (const r of rows || []) {
+    const k = priceKey(r);
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    if (n === 2) dupGroups.push(k);
   }
+  return dupGroups;
+}
 
-  // P5: place_ids matching neither registry (validates the identity decision).
-  {
-    const { res, json } = await rest('/rest/v1/price_reports?select=place_id');
-    if (!res.ok) {
-      check('P5 place_id registry coverage', 'FAIL', `query failed: ${res.status}`);
-    } else {
-      const ids = [...new Set((Array.isArray(json) ? json : []).map((r) => r.place_id).filter(Boolean))];
-      let matched = 0;
-      for (const id of ids.slice(0, 200)) {
-        const a = await rest(`/rest/v1/attractions?select=place_id&or=(place_id.eq.${encodeURIComponent(id)},google_place_id.eq.${encodeURIComponent(id)})&limit=1`);
-        const c = await rest(`/rest/v1/places_cache?select=place_id&place_id=eq.${encodeURIComponent(id)}&limit=1`);
-        const hitA = Array.isArray(a.json) && a.json.length > 0;
-        const hitC = Array.isArray(c.json) && c.json.length > 0;
-        if (hitA || hitC) matched += 1;
-      }
-      check(
-        'P5 place_ids resolvable post-identity-fix',
-        'INFO',
-        `${matched}/${ids.length} distinct ids resolve (unresolvable ones prove the old FK was wrong)`
+export function evaluateProofDupes(rows) {
+  const seen = new Map();
+  const dupGroups = [];
+  for (const r of rows || []) {
+    if (r.proof_hash == null) continue;
+    const k = `${r.user_id}|${r.proof_hash}`;
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    if (n === 2) dupGroups.push(k);
+  }
+  return dupGroups;
+}
+
+export function evaluateItemNames(rows) {
+  return (rows || []).filter((r) => r.item_name == null || String(r.item_name).trim() === '');
+}
+
+export function evaluateReportDates(rows) {
+  // Rows whose date can come from NEITHER report_date NOR created_at.
+  return (rows || []).filter((r) => r.report_date == null && !r.created_at);
+}
+
+function runSelfTest() {
+  const cases = [];
+  const dup = { user_id: 'u1', reward_type: 'daily_itinerary', reference_id: '2026-01-01' };
+  cases.push(['F1 breaking -> FAIL', evaluateRewardEntitlements([dup, { ...dup }]).length === 1]);
+  cases.push(['F1 clean -> pass', evaluateRewardEntitlements([dup]).length === 0]);
+  const pr = { user_id: 'u1', place_id: 'p1', item_name: ' Tea ', created_at: '2026-01-01T10:00:00Z' };
+  const prSame = { user_id: 'u1', place_id: 'p1', item_name: 'tea', created_at: '2026-01-01T20:00:00Z' };
+  cases.push(['F2 breaking (case/space-insensitive) -> FAIL', evaluatePriceEntitlements([pr, prSame]).length === 1]);
+  cases.push(['F2 different day -> pass', evaluatePriceEntitlements([pr, { ...prSame, created_at: '2026-01-02T10:00:00Z' }]).length === 0]);
+  const ph = { user_id: 'u1', proof_hash: 'abc' };
+  cases.push(['F3 breaking -> FAIL', evaluateProofDupes([ph, { ...ph }]).length === 1]);
+  cases.push(['F3 null hash ignored -> pass', evaluateProofDupes([{ user_id: 'u1' }]).length === 0]);
+  cases.push(['F4 null/empty flagged', evaluateItemNames([{ item_name: null }, { item_name: '  ' }, { item_name: 'x' }]).length === 2]);
+  cases.push(['F5 missing both dates flagged', evaluateReportDates([{ id: 1 }, { report_date: '2026-01-01' }]).length === 1]);
+
+  let failed = 0;
+  for (const [name, ok] of cases) {
+    console.log(`[${ok ? 'PASS' : 'FAIL'}] self-test: ${name}`);
+    if (!ok) failed += 1;
+  }
+  console.log(failed === 0 ? 'SELF-TEST: all green' : `SELF-TEST: ${failed} broken`);
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+async function runLive() {
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SERVICE) {
+    console.error('Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY (read-only use)');
+    process.exit(2);
+  }
+  const headers = {
+    apikey: SERVICE,
+    Authorization: `Bearer ${SERVICE}`,
+    'Content-Type': 'application/json',
+  };
+  // Full-table reads (no sampling caps): constraints cover whole tables,
+  // so the gate must too. Pagination: PostgREST defaults to 1000 rows per
+  // request — page through with Range headers.
+  async function fetchAll(path, select) {
+    const rows = [];
+    const pageSize = 1000;
+    for (let offset = 0; ; offset += pageSize) {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/${path}?select=${select}`,
+        { headers: { ...headers, Range: `${offset}-${offset + pageSize - 1}` } }
       );
+      if (!res.ok) throw new Error(`query failed: ${path} status=${res.status}`);
+      const page = await res.json();
+      if (!Array.isArray(page) || page.length === 0) break;
+      rows.push(...page);
+      if (page.length < pageSize) break;
     }
+    return rows;
   }
 
-  // P2/P3 proxies: duplicate (user, place, item) same-day submissions.
-  {
-    const { res, json } = await rest('/rest/v1/price_reports?select=user_id,place_id,item_name,created_at&order=created_at.desc&limit=1000');
-    if (!res.ok) {
-      check('P2/P3 duplicate submission scan', 'FAIL', `query failed: ${res.status}`);
-    } else {
-      const seen = new Map();
-      let dups = 0;
-      for (const r of Array.isArray(json) ? json : []) {
-        const day = String(r.created_at || '').slice(0, 10);
-        const key = `${r.user_id}|${r.place_id}|${String(r.item_name || '').toLowerCase().trim()}|${day}`;
-        seen.set(key, (seen.get(key) || 0) + 1);
-        if (seen.get(key) === 2) dups += 1;
-      }
-      check(
-        'P2/P3 same-day duplicate submissions',
-        dups > 0 ? 'WARN' : 'PASS',
-        `${dups} duplicate groups in last 1000 rows (entitlement index will reject future ones)`
-      );
-    }
-  }
+  console.log('\n=== RAVA PREFLIGHT (read-only, full-table) ===\n');
+  let fails = 0;
+  const gate = (name, dups, extra = '') => {
+    const bad = dups.length > 0;
+    console.log(`[${bad ? 'FAIL' : 'PASS'}] ${name}${bad ? ` — ${dups.length} blocking group(s) ${extra}` : ''}`);
+    if (bad) fails += 1;
+  };
 
-  // P1 proxy: same-tx rewards are PK-guarded already; check reward bursts per user/day.
-  {
-    const { res, json } = await rest('/rest/v1/reward_ledger?select=user_id,created_at&order=created_at.desc&limit=2000');
-    if (!res.ok) {
-      check('P1 reward burst scan', 'FAIL', `query failed: ${res.status}`);
-    } else {
-      const perDay = new Map();
-      let max = 0;
-      for (const r of Array.isArray(json) ? json : []) {
-        const key = `${r.user_id}|${String(r.created_at || '').slice(0, 10)}`;
-        const n = (perDay.get(key) || 0) + 1;
-        perDay.set(key, n);
-        if (n > max) max = n;
-      }
-      check('P1 max rewards per user/day (burst signal)', max > 25 ? 'WARN' : 'PASS', `max=${max}`);
-    }
-  }
+  const ledger = await fetchAll('reward_ledger', 'user_id,reward_type,reference_id');
+  gate('F1 reward entitlement duplicates', evaluateRewardEntitlements(ledger));
 
-  // NOTE: exact GROUP BY duplicate detection for the new UNIQUE indexes runs in
-  // the SQL editor pre-apply (see migration comments); PostgREST cannot group.
-  // This script covers everything expressible read-only over REST.
-  const fails = findings.filter((f) => f.level === 'FAIL');
-  console.log(`\n=== PREFLIGHT: ${fails.length} FAIL, ${findings.filter((f) => f.level === 'WARN').length} WARN ===`);
-  process.exit(fails.length ? 1 : 0);
+  const reports = await fetchAll(
+    'price_reports',
+    'user_id,place_id,item_name,report_date,created_at,proof_hash'
+  );
+  gate('F2 price entitlement duplicates', evaluatePriceEntitlements(reports));
+  gate('F3 proof-hash duplicates', evaluateProofDupes(reports));
+  const badItems = evaluateItemNames(reports);
+  console.log(`[${badItems.length > 0 ? 'FAIL' : 'PASS'}] F4 null/empty item_name rows${badItems.length > 0 ? ` — ${badItems.length} rows (migration backfills, then NOT NULL)` : ''}`);
+  if (badItems.length > 0) fails += 1;
+  const badDates = evaluateReportDates(reports);
+  // Backfill covers created_at-present rows; only rows missing BOTH block.
+  console.log(`[${badDates.length > 0 ? 'FAIL' : 'PASS'}] F5 un-backfillable report dates${badDates.length > 0 ? ` — ${badDates.length} rows` : ''}`);
+  if (badDates.length > 0) fails += 1;
+
+  // Advisory only: registry coverage informs the identity decision, blocks nothing.
+  const ids = [...new Set(reports.map((r) => r.place_id).filter(Boolean))];
+  let matched = 0;
+  for (const id of ids.slice(0, 500)) {
+    const a = await fetch(
+      `${SUPABASE_URL}/rest/v1/attractions?select=place_id&or=(place_id.eq.${encodeURIComponent(id)},google_place_id.eq.${encodeURIComponent(id)})&limit=1`,
+      { headers }
+    ).then((r) => r.json()).catch(() => []);
+    if (Array.isArray(a) && a.length > 0) matched += 1;
+  }
+  console.log(`[INFO] place registry coverage: ${matched}/${ids.length} distinct ids resolve`);
+
+  console.log(fails === 0 ? '\nPREFLIGHT: clean' : `\nPREFLIGHT: ${fails} BLOCKING group(s)`);
+  process.exit(fails === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv.includes('--self-test')) {
+  runSelfTest();
+} else {
+  runLive().catch((err) => {
+    console.error(err?.message || err);
+    process.exit(1);
+  });
+}

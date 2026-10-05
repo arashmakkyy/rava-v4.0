@@ -1,18 +1,25 @@
 -- =====================================================================================
--- RAVA P0.4b: Live session leases — proportional, reserved, reconcilable.
+-- RAVA P0.4b: Live session leases — proportional, prepaid, non-refundable.
 -- Forward-only. Idempotent.
 --
+-- Trust boundary (explicit, fail-closed):
+--  - The browser NEVER calls lease RPCs directly. Flow is strictly:
+--      browser -> mint-live-token Edge -> service-authorized RPCs below.
+--  - acquire_live_lease takes a user id and trusts ONLY service_role callers.
+--    No policy parameter comes from any client: duration cap, daily quota and
+--    fuel rate are constants inside this file.
+--  - Leases are PREPAID and NON-REFUNDABLE by design. There is deliberately NO
+--    usage-based refund path callable with client-reported seconds: without
+--    server-observed usage, any such refund is mint-free fuel. The single
+--    exception is mint-failure AFTER debit, refunded by the minter itself via
+--    refund_live_lease (service_role only, full amount, idempotent).
+--
 -- Invariant: live minutes obtainable NEVER exceed fuel actually held, even
--- under parallel mint requests. Mechanism:
---  acquire_live_lease() locks the profile row (FOR UPDATE), computes affordable
---  minutes = floor(wallet_balance_hours * 60), debits the lease cost UP FRONT,
---  and records the lease. Reconnects always acquire a NEW lease (re-checked).
---  close_live_lease() refunds the unused portion (idempotent). Mint failure
---  refunds in full via the same path. Crash without close = bounded leak of at
---  most one lease cost (documented, auditable in reward_ledger as live_lease).
+-- under parallel mint requests (profile row is locked FOR UPDATE; reconnects
+-- always acquire a NEW lease). Crash without close leaks at most one lease
+-- cost (bounded, ledger-visible as live_lease).
 --
 -- Rate: 1 fuel-hour = 60 live-minutes. MIN 1 minute (dust denied), MAX 15.
--- Daily mint quota enforced inside acquire (no separate check needed).
 -- =====================================================================================
 
 CREATE TABLE IF NOT EXISTS public.live_leases (
@@ -20,9 +27,8 @@ CREATE TABLE IF NOT EXISTS public.live_leases (
   user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   minutes INTEGER NOT NULL,
   cost_hours DECIMAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'refunded')),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  closed_at TIMESTAMP WITH TIME ZONE
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'refunded')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 ALTER TABLE public.live_leases ENABLE ROW LEVEL SECURITY;
@@ -35,13 +41,19 @@ CREATE POLICY "Users can view own leases"
 CREATE INDEX IF NOT EXISTS idx_live_leases_user_day
   ON public.live_leases (user_id, created_at DESC);
 
+-- Policy constants are server-owned (baked into the function bodies below):
+-- MAX 15 minutes per lease, 10 mints per user per day. No client input.
+
 -- -------------------------------------------------------------------------------------
 -- Acquire: balance gate + proportional minutes + upfront debit + quota, atomically.
+-- Service-role callers only (the mint-live-token Edge Function). The target user
+-- is an explicit parameter because service_role has no auth.uid() — the Edge
+-- function validates the end-user JWT BEFORE calling, so identity is still bound
+-- to a verified session, just one hop removed.
 -- Returns { ok, lease_id, minutes, expires_at } or { ok:false, reason }.
 -- -------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.acquire_live_lease(
-  px_max_minutes INTEGER DEFAULT 15,
-  px_max_mints_per_day INTEGER DEFAULT 10
+  px_user_id UUID
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -49,19 +61,19 @@ SECURITY DEFINER
 SET search_path = public, extensions
 AS $$
 DECLARE
-  v_uid UUID := auth.uid();
+  v_uid UUID := px_user_id;
   v_balance DECIMAL;
   v_lease_id UUID;
   v_minutes INTEGER;
   v_cost DECIMAL;
   v_mints_today INTEGER;
   v_expires_at TIMESTAMP WITH TIME ZONE;
+  -- Server-owned policy (constants, never parameters).
+  c_max_minutes CONSTANT INTEGER := 15;
+  c_max_mints_per_day CONSTANT INTEGER := 10;
 BEGIN
   IF v_uid IS NULL THEN
     RAISE EXCEPTION 'Unauthorized';
-  END IF;
-  IF px_max_minutes IS NULL OR px_max_minutes <= 0 THEN
-    RAISE EXCEPTION 'Invalid lease length';
   END IF;
 
   -- Lock the profile: parallel mints serialize here, so entitlements can never
@@ -75,7 +87,7 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'reason', 'no-profile');
   END IF;
 
-  v_minutes := LEAST(FLOOR(v_balance * 60)::INTEGER, px_max_minutes);
+  v_minutes := LEAST(FLOOR(v_balance * 60)::INTEGER, c_max_minutes);
   IF v_minutes < 1 THEN
     RETURN jsonb_build_object('ok', false, 'reason', 'insufficient-fuel');
   END IF;
@@ -83,7 +95,7 @@ BEGIN
   SELECT COUNT(*) INTO v_mints_today
   FROM live_leases
   WHERE user_id = v_uid AND created_at::date = CURRENT_DATE;
-  IF v_mints_today >= px_max_mints_per_day THEN
+  IF v_mints_today >= c_max_mints_per_day THEN
     RETURN jsonb_build_object('ok', false, 'reason', 'quota-exceeded');
   END IF;
 
@@ -111,13 +123,13 @@ END;
 $$;
 
 -- -------------------------------------------------------------------------------------
--- Close/reconcile: credit back the unused portion. Fully idempotent — second and
--- later calls are no-ops. Used on clean disconnect (actual seconds), on expiry,
--- and as a FULL refund (actual 0) when token minting fails after acquiring.
+-- Full refund, callable ONLY on the mint-failure path by the minter itself
+-- (service_role). There is deliberately NO usage-based or client-driven refund:
+-- without server-observed usage, any reported-seconds refund is mint-free fuel.
+-- Idempotent: second and later calls are no-ops.
 -- -------------------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.close_live_lease(
-  px_lease_id UUID,
-  px_actual_seconds INTEGER DEFAULT NULL
+CREATE OR REPLACE FUNCTION public.refund_live_lease(
+  px_lease_id UUID
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -125,46 +137,38 @@ SECURITY DEFINER
 SET search_path = public, extensions
 AS $$
 DECLARE
-  v_uid UUID := auth.uid();
   v_lease public.live_leases%ROWTYPE;
-  v_actual DECIMAL;
-  v_refund DECIMAL;
 BEGIN
-  IF v_uid IS NULL THEN
-    RAISE EXCEPTION 'Unauthorized';
-  END IF;
-
   SELECT * INTO v_lease FROM live_leases WHERE id = px_lease_id FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN jsonb_build_object('ok', false, 'reason', 'unknown-lease');
   END IF;
-  IF v_lease.user_id != v_uid THEN
-    RETURN jsonb_build_object('ok', false, 'reason', 'not-owner');
-  END IF;
   IF v_lease.status != 'open' THEN
     RETURN jsonb_build_object('ok', true, 'idempotent', true, 'status', v_lease.status);
   END IF;
 
-  v_actual := GREATEST(0, COALESCE(px_actual_seconds, v_lease.minutes * 60)) / 3600.0;
-  v_refund := GREATEST(0, v_lease.cost_hours - LEAST(v_actual, v_lease.cost_hours));
+  UPDATE profiles
+  SET wallet_balance = wallet_balance + v_lease.cost_hours
+  WHERE id = v_lease.user_id;
 
-  IF v_refund > 0 THEN
-    UPDATE profiles
-    SET wallet_balance = wallet_balance + v_refund
-    WHERE id = v_uid;
-
-    INSERT INTO reward_ledger (transaction_id, user_id, amount, xp_amount, reward_type, reference_id)
-    VALUES (gen_random_uuid(), v_uid, v_refund, 0, 'live_lease_refund', v_lease.id::TEXT);
-  END IF;
+  INSERT INTO reward_ledger (transaction_id, user_id, amount, xp_amount, reward_type, reference_id)
+  VALUES (gen_random_uuid(), v_lease.user_id, v_lease.cost_hours, 0, 'live_lease_refund', v_lease.id::TEXT);
 
   UPDATE live_leases
-  SET status = 'closed', closed_at = NOW()
+  SET status = 'refunded'
   WHERE id = px_lease_id;
 
-  RETURN jsonb_build_object('ok', true, 'refunded_hours', v_refund);
+  RETURN jsonb_build_object('ok', true, 'refunded_hours', v_lease.cost_hours);
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.acquire_live_lease(integer, integer) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.close_live_lease(uuid, integer) TO authenticated;
+REVOKE ALL ON FUNCTION public.acquire_live_lease(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.acquire_live_lease(uuid) FROM anon;
+REVOKE ALL ON FUNCTION public.acquire_live_lease(uuid) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.acquire_live_lease(uuid) TO service_role;
+
+REVOKE ALL ON FUNCTION public.refund_live_lease(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.refund_live_lease(uuid) FROM anon;
+REVOKE ALL ON FUNCTION public.refund_live_lease(uuid) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.refund_live_lease(uuid) TO service_role;

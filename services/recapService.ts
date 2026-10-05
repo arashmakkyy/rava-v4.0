@@ -1,6 +1,6 @@
 import { aiProxyService } from './ai/aiProxyService';
 import { supabase } from './supabaseClient';
-import { extractJSON } from '../utils/jsonParser';
+import { extractJSON, toJson } from '../utils/jsonParser';
 import { RecapFacts, RecapResult, Stamp, TripEvent } from '../types';
 import { getTodaysEvents, isActivityDone, isActivityOpen, todayIso } from '../utils/tripMapper';
 
@@ -181,19 +181,19 @@ export async function saveDailyRecap(
   const payload = {
     user_id: userId,
     recap_date: facts.date,
-    city: facts.city,
+    city: facts.city ?? null,
     summary: result.summary,
-    highlights: {
+    highlights: toJson({
       items: result.highlights,
       daily_cost: result.dailyCost,
       tomorrow_hint: result.tomorrowHint,
       passport_item: result.passportItem,
-    },
+    }),
     xp_earned: result.xpEarned,
     places_visited: result.placesVisited,
     daily_cost: result.dailyCost,
     tomorrow_hint: result.tomorrowHint,
-    facts: facts as unknown as Record<string, unknown>,
+    facts: toJson(facts),
   };
 
   const { data, error } = await supabase

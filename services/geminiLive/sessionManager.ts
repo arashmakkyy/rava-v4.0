@@ -30,12 +30,10 @@ class SessionManager {
   private disconnecting = false;
   private connectGeneration = 0;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
-  // Active fuel lease for this session (proportional reservation, migration 16).
-  // Usage accounting = lease debit at mint + reconcile at close. There is NO
-  // parallel deductFuel path: settle-on-disconnect was removed to avoid double
-  // charging (its outbox RPC still exists for legacy actions only).
-  private activeLeaseId: string | null = null;
-  private leaseStartedAt = 0;
+  // NOTE: fuel leases are prepaid and non-refundable (migration 16). The client
+  // keeps NO lease handle: disconnect/expiry/recovery simply end the session,
+  // and the debited minutes are its bounded cost. Only the minter (service
+  // path, mint-failure only) can ever refund, via refund_live_lease.
 
   getStatus(): SessionStatus {
     return this.status;
@@ -79,30 +77,6 @@ class SessionManager {
     const minutes = (data as { minutes?: number })?.minutes;
     if (!token || !expiresAt || !leaseId || !minutes) throw new Error('BAD_TOKEN');
     return { token, apiVersion, expiresAt, leaseId, minutes };
-  }
-
-  /**
-   * Reconcile the active lease with ACTUAL usage (idempotent server-side).
-   * Called on every terminal path: clean disconnect, token expiry, and
-   * recovery exhaustion. Crash-without-close leaks at most one lease cost
-   * (bounded, ledger-visible) — never double-charges, never silently drops.
-   */
-  private async closeLease(reason: string) {
-    const leaseId = this.activeLeaseId;
-    if (!leaseId) return;
-    this.activeLeaseId = null;
-    const elapsedSec = this.leaseStartedAt > 0
-      ? Math.max(0, Math.round((Date.now() - this.leaseStartedAt) / 1000))
-      : 0;
-    this.leaseStartedAt = 0;
-    try {
-      await supabase.rpc('close_live_lease', {
-        px_lease_id: leaseId,
-        px_actual_seconds: elapsedSec,
-      });
-    } catch (err) {
-      console.error(`[SessionManager] Lease reconcile failed (${reason}), will retry on next sync:`, err);
-    }
   }
 
   private armExpiryTimer(expiresAt: string, generation: number) {
@@ -226,8 +200,6 @@ class SessionManager {
           onopen: () => {
             if (generation !== this.connectGeneration || this.intentionalClose) return;
             this.status = 'connected';
-            this.activeLeaseId = liveToken.leaseId;
-            this.leaseStartedAt = Date.now();
             connectionRecovery.markSuccess();
             useUIStore.getState().setVoiceError(null);
             conversationState.setListening();
@@ -351,10 +323,8 @@ class SessionManager {
     this.status = 'reconnecting';
 
     console.error('[SessionManager] Unexpected disconnect — attempting recovery without reload');
-    // Reconcile the dead session's lease BEFORE recovery acquires a new one:
-    // usage so far is refunded exactly once (close is idempotent), and the
-    // reconnect mints a fresh lease — no overlap, no free minutes, no double bill.
-    void this.closeLease('unexpected-close');
+    // The dead session's lease stays debited (prepaid, non-refundable); recovery
+    // mints a FRESH lease, so no overlap and no free minutes.
     this.teardownMediaOnly();
     this.session = null;
     this.sessionPromise = null;
@@ -382,9 +352,6 @@ class SessionManager {
     this.connectGeneration += 1;
     connectionRecovery.reset();
     this.clearExpiryTimer();
-
-    // Reconcile actual usage against the lease (idempotent refund of unused fuel).
-    void this.closeLease('disconnect');
 
     if (this.abortController) {
       this.abortController.abort();

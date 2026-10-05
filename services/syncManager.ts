@@ -1,5 +1,6 @@
 import { dbService, type OutboxItem } from './dbService';
 import { supabase } from './supabaseClient';
+import { toJson } from '../utils/jsonParser';
 import { useUserStore } from '../store/useUserStore';
 import { useAuthStore } from '../store/useAuthStore';
 
@@ -123,12 +124,17 @@ class SyncManagerProvider {
       case 'FINALIZE_ONBOARDING': {
         const { profile, trip } = action.payload;
         // Explicit UPDATE (never upsert): the row exists via signup trigger, and
-        // only allowlisted user-owned columns are touched. `id` never in SET.
-        const { id: _pid, ...profileUpdate } = profile as Record<string, unknown>;
-        const profileId = (profile as { id: string }).id;
+        // only allowlisted user-owned columns are touched. Shape mirrors the
+        // finalizeOnboarding payload; `id` never enters the SET body.
+        const { id: profileId, ...profileUpdate } = profile as {
+          id: string;
+          current_city: 'Istanbul' | 'Dubai' | 'Tehran';
+          semantic_profile: unknown;
+          onboarding_completed: boolean;
+        };
         const { data: updated, error: profileError } = await supabase
           .from('profiles')
-          .update(profileUpdate)
+          .update({ ...profileUpdate, semantic_profile: toJson(profileUpdate.semantic_profile) })
           .eq('id', profileId)
           .select('id');
         if (profileError) fail('profiles.update', profileError);
@@ -176,8 +182,11 @@ class SyncManagerProvider {
       try {
         pendingActions = await dbService.getAllOutboxItems();
       } catch (err) {
-        // Storage read failure is NOT an empty queue: log loudly and retry later.
-        console.error('[Sync Manager] Outbox read failed — will retry on next trigger.', err);
+        // Storage read failure is NOT an empty queue: log loudly AND self-wake.
+        // Without this, a transient IDB failure would stall the queue until an
+        // unrelated future trigger (reload/enqueue/online event).
+        console.error('[Sync Manager] Outbox read failed — retrying with backoff.', err);
+        this.scheduleRetry(BACKOFF_CAP_MS);
         return;
       }
       if (pendingActions.length === 0) {
@@ -210,9 +219,11 @@ class SyncManagerProvider {
         } catch (individualErr) {
           const msg = (individualErr as Error)?.message || String(individualErr);
           // Transport failure (lying onLine flag, captive portal, flaky radio):
-          // do NOT burn a retry attempt — just stop and wait for a later trigger.
+          // do NOT burn a retry attempt — but DO self-wake, so recovery needs no
+          // reload, no new enqueue, and no offline/online event.
           if (/failed to fetch|networkerror|load failed|offline|timeout|abort/i.test(msg)) {
-            console.warn(`[Sync Manager] Transport failure on ${action.id}, retrying later (attempt not counted).`);
+            console.warn(`[Sync Manager] Transport failure on ${action.id}, self-retry scheduled (attempt not counted).`);
+            this.scheduleRetry(BACKOFF_CAP_MS);
             break;
           }
           const attempts = (action.attempts ?? 0) + 1;
