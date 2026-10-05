@@ -106,6 +106,13 @@ export const POIController: React.FC = () => {
   }, [activePOI?.id, fullDetailPOI?.id]);
 
   const attemptStamping = useCallback(async (poiId: string, poiName: string, poiLat: number, poiLng: number) => {
+    const known = fullDetailPOI || activePOI;
+    // Stamps exist only for curated Rava entities (server rejects the rest).
+    // Skip the attempt early with a graceful notice instead of a silent dead-letter.
+    if (known && known.id === poiId && known.isGooglePOI && !known.is_curated) {
+      setPOIError('مهر پاسپورت فقط برای مکان‌های منتخب راواست ✨');
+      return;
+    }
     const geo = GeoPoint.fromArray(userLocation);
     if (!geo || isStamping) return;
     
@@ -127,7 +134,7 @@ export const POIController: React.FC = () => {
         console.error("[POI] Stamp failed silently:", err);
       }
     }
-  }, [userLocation, wallet.stamps, addStamp, setCelebratingStamp, isStamping]);
+  }, [userLocation, wallet.stamps, addStamp, setCelebratingStamp, isStamping, fullDetailPOI, activePOI, setPOIError]);
 
   const handleExpand = async () => {
     if (!activePOI) return;

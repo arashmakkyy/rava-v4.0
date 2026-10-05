@@ -19,11 +19,18 @@ REVOKE ALL ON FUNCTION public.increment_my_wallet(uuid, numeric, integer, text) 
 REVOKE ALL ON FUNCTION public.unlock_xp_achievements(uuid) FROM anon, authenticated, PUBLIC;
 
 -- -------------------------------------------------------------------------------------
--- 2. Column-level protection: wallet/xp change only through SECURITY DEFINER RPCs.
---    Verified safe: no client code path updates these columns directly (only
---    current_city / semantic_profile / username / avatar_url / onboarding_completed).
+-- 2. Column allowlist: clients may UPDATE only user-owned profile fields.
+--    Server-owned columns (wallet_balance, xp_level, reputation_score, streaks,
+--    referral accounting, timestamps) are never directly writable, so even a
+--    future server-owned column defaults to denied. SECURITY DEFINER RPCs
+--    (owner) still write everything they need.
+--    Verified safe: every legitimate client write targets only these columns
+--    (username, avatar_url, current_city, preferences, semantic_profile,
+--    onboarding_completed — see useAuthStore, TravelPersona, FINALIZE upsert).
 -- -------------------------------------------------------------------------------------
-REVOKE UPDATE (wallet_balance, xp_level) ON public.profiles FROM anon, authenticated, PUBLIC;
+REVOKE UPDATE ON public.profiles FROM anon, authenticated, PUBLIC;
+GRANT UPDATE (username, avatar_url, current_city, preferences, semantic_profile, onboarding_completed)
+  ON public.profiles TO authenticated;
 
 -- -------------------------------------------------------------------------------------
 -- 3. Entitlement uniqueness (partial: only reward types with server-derived references).
@@ -198,23 +205,90 @@ $$;
 GRANT EXECUTE ON FUNCTION public.claim_demo_credit(uuid) TO authenticated;
 
 -- -------------------------------------------------------------------------------------
--- 6. process_poi_visit v2 — soft server-side geofence + daily cap.
---    - Canonical POI coordinates come from attractions (never from the client).
---    - If canonical coords exist AND client sent coords: require <= 200m.
---    - Google-only POIs (no canonical row): accepted, still daily-capped (soft model).
---    - Max 20 stamps per server day (mass-farming bound). Audit via stamps.created_at.
---    Legacy 4-arg overload delegates with NULL coords (pre-update clients keep working,
---    without the distance check — same trust level as before this migration).
+-- 5b. record_daily_activity: server-authoritative date (replaces 05 definition).
+--     The old signature accepted px_date from the client, letting anyone farm
+--     streak XP by submitting arbitrary dates. The parameter is KEPT for
+--     backward compatibility but deliberately IGNORED; entitlement always uses
+--     the server date. Same-day repeats are no-ops (early return).
+--     Timezone semantics (explicit): CURRENT_DATE in the database timezone.
+--     Streaks are cosmetic + small capped XP, so per-traveler tz precision is
+--     out of scope; this is documented, not silent.
 -- -------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.record_daily_activity(px_date DATE DEFAULT NULL)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_today DATE := CURRENT_DATE;
+  v_last DATE;
+  v_streak INTEGER;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Unauthorized';
+  END IF;
+
+  SELECT last_active_date, COALESCE(current_streak, 0)
+  INTO v_last, v_streak
+  FROM profiles
+  WHERE id = v_uid;
+
+  IF v_last IS NOT NULL AND v_last = v_today THEN
+    RETURN jsonb_build_object('current_streak', v_streak, 'last_active_date', v_last);
+  END IF;
+
+  IF v_last IS NOT NULL AND v_last = (v_today - 1) THEN
+    v_streak := v_streak + 1;
+  ELSE
+    v_streak := 1;
+  END IF;
+
+  UPDATE profiles
+  SET last_active_date = v_today, current_streak = v_streak
+  WHERE id = v_uid;
+
+  -- Small XP for maintaining streak (ledger-backed, deterministic tx id).
+  PERFORM increment_wallet(
+    md5(v_uid::text || ':streak:' || v_today::text)::uuid,
+    0,
+    LEAST(10 + v_streak, 50),
+    'streak'
+  );
+
+  RETURN jsonb_build_object('current_streak', v_streak, 'last_active_date', v_today);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.record_daily_activity(date) TO authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- 6. process_poi_visit v2 — strict soft server-side geofence.
+--    - Canonical POI coordinates come from attractions (never from the client).
+--    - User coords are REQUIRED: NULL lat/lng never earns a reward (fail closed).
+--    - Unknown place_id (no canonical row) FAILS: stamps exist only for known
+--      curated entities, so invented IDs cannot farm rewards.
+--    - Distance <= 200m against the canonical point; max 20 stamps/server day.
+--    - Claimed coords are stored on the stamp row for audit.
+--    - NOTE vs pre-P0.1 builds: old 4-arg calls now FAIL loudly instead of
+--      earning silently. That is intentional (fail closed over silent reward).
+--    - This is a SOFT geofence (abuse/mass-farming barrier), NOT proof of
+--      physical presence: client coords are a signal, not cryptographic proof.
+-- -------------------------------------------------------------------------------------
+ALTER TABLE public.stamps ADD COLUMN IF NOT EXISTS claimed_lat float8;
+ALTER TABLE public.stamps ADD COLUMN IF NOT EXISTS claimed_lng float8;
+
 DROP FUNCTION IF EXISTS public.process_poi_visit(uuid, text, text, text);
+DROP FUNCTION IF EXISTS public.process_poi_visit(uuid, text, text, text, float8, float8);
 
 CREATE OR REPLACE FUNCTION public.process_poi_visit(
   px_transaction_id UUID,
   px_place_id TEXT,
   px_place_name TEXT,
   px_city TEXT,
-  px_lat float8 DEFAULT NULL,
-  px_lng float8 DEFAULT NULL
+  px_lat float8,
+  px_lng float8
 )
 RETURNS VOID
 LANGUAGE plpgsql
@@ -234,6 +308,10 @@ BEGIN
     RAISE EXCEPTION 'Unauthorized: برای ثبت مهر باید لاگین باشی رفیق.';
   END IF;
 
+  IF px_lat IS NULL OR px_lng IS NULL THEN
+    RAISE EXCEPTION 'NO_LOCATION: مختصات لازم است؛ بدون لوکیشن مهری ثبت نمی‌شود.';
+  END IF;
+
   IF EXISTS (SELECT 1 FROM reward_ledger WHERE transaction_id = px_transaction_id) THEN
     RETURN;
   END IF;
@@ -250,19 +328,21 @@ BEGIN
     RAISE EXCEPTION 'DAILY_LIMIT: سقف مهر امروز پر شده، فردا دوباره بیا.';
   END IF;
 
-  -- Canonical coordinates from our own DB; client coords are only the *claim*.
+  -- Canonical coordinates from our own DB; unknown entities fail closed.
   SELECT location INTO v_canon FROM attractions WHERE place_id = px_place_id;
-  IF v_canon IS NOT NULL AND px_lat IS NOT NULL AND px_lng IS NOT NULL THEN
-    IF ST_Distance(
-      v_canon,
-      ST_SetSRID(ST_MakePoint(px_lng, px_lat), 4326)::geography
-    ) > 200 THEN
-      RAISE EXCEPTION 'TOO_FAR: برای ثبت مهر باید نزدیک مکان باشی.';
-    END IF;
+  IF v_canon IS NULL THEN
+    RAISE EXCEPTION 'UNKNOWN_PLACE: این مکان در لیست راوا نیست.';
   END IF;
 
-  INSERT INTO stamps (user_id, place_id, place_name, city)
-  VALUES (v_current_user, px_place_id, px_place_name, px_city);
+  IF ST_Distance(
+    v_canon,
+    ST_SetSRID(ST_MakePoint(px_lng, px_lat), 4326)::geography
+  ) > 200 THEN
+    RAISE EXCEPTION 'TOO_FAR: برای ثبت مهر باید نزدیک مکان باشی.';
+  END IF;
+
+  INSERT INTO stamps (user_id, place_id, place_name, city, claimed_lat, claimed_lng)
+  VALUES (v_current_user, px_place_id, px_place_name, px_city, px_lat, px_lng);
 
   INSERT INTO reward_ledger (transaction_id, user_id, amount, xp_amount, reward_type, reference_id)
   VALUES (px_transaction_id, v_current_user, v_reward_fuel, v_reward_xp, 'stamp', px_place_id);
@@ -270,15 +350,11 @@ BEGIN
   UPDATE profiles
   SET
     wallet_balance = wallet_balance + v_reward_fuel,
-    xp_level = xp_level + v_xp
+    xp_level = xp_level + v_reward_xp
   WHERE id = v_current_user;
 
   PERFORM unlock_xp_achievements(v_current_user);
 END;
 $$;
-
--- NOTE: the pre-P0.1 4-arg overload was dropped above; clients on the old build send
--- exactly 4 args. The new function has DEFAULT NULL on the new params, so old 4-arg
--- calls keep working (soft path, same trust as before). No separate wrapper needed.
 
 GRANT EXECUTE ON FUNCTION public.process_poi_visit(uuid, text, text, text, float8, float8) TO authenticated;
