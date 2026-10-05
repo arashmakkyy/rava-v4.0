@@ -11,9 +11,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-webhook-secret',
 };
 
-// Server-enforced farming bounds (per user, per server day). Checked BEFORE any
-// Gemini call so capped/duplicated reports cost nothing.
-const MAX_VERIFIED_PER_DAY = 5;
+// Server-enforced farming bounds (per user, per server day). Attempt quota is
+// INDEPENDENT of verification outcome: garbage burns quota too.
+const MAX_AI_ATTEMPTS_PER_DAY = 10;
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -95,20 +95,13 @@ serve(async (req) => {
       });
     }
 
-    // Daily cap BEFORE any Gemini cost: verified rewards per user per server day.
-    const today = new Date().toISOString().slice(0, 10);
-    const { count: verifiedToday } = await supabase
-      .from('price_reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', record.user_id)
-      .eq('ai_verification_status', 'verified')
-      .gte('created_at', `${today}T00:00:00.000Z`);
-    if ((verifiedToday ?? 0) >= MAX_VERIFIED_PER_DAY) {
-      await supabase.from('price_reports').update({ ai_verification_status: 'capped' }).eq('id', record.id);
-      return new Response(JSON.stringify({ success: true, final: { status: 'capped' } }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    // Order below is deliberate and cost-ordered (cheapest first):
+    //  1. download + hash (no AI) → 2. same-proof dup check (no AI, no quota)
+    //  3. atomic claim RPC (quota + pending gate) → 4. Gemini → 5. finalize.
+    //  A duplicate proof is rejected BEFORE quota is consumed. A concurrent
+    //  same-proof race collapses on uq_price_proof_per_user: the loser throws,
+    //  the webhook retries, and the retry finds the winner's hash → rejected.
+    //  No path reaches Gemini twice for one proof, and no DB error is ignored.
 
     // ۱. دانلود تصویر از استوریج
     const { data: fileData } = await supabase.storage
@@ -130,12 +123,36 @@ serve(async (req) => {
       .neq('id', record.id)
       .in('ai_verification_status', ['pending', 'verified'])
       .limit(1);
-    await supabase.from('price_reports').update({ proof_hash: proofHash }).eq('id', record.id);
+    const { error: hashError } = await supabase.from('price_reports').update({ proof_hash: proofHash }).eq('id', record.id);
+    if (hashError) {
+      // Almost certainly the unique rail firing under a concurrent same-proof
+      // race: another worker claimed this hash first. Never ignore it — treat
+      // as duplicate (fail closed, no Gemini, no quota consumed).
+      await supabase.rpc('finalize_price_verification', {
+        px_report_id: record.id, px_verified: false, px_confidence: 0,
+      });
+      return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: 'duplicate-proof-race' } }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
     if (dupes && dupes.length > 0) {
       await supabase.rpc('finalize_price_verification', {
         px_report_id: record.id, px_verified: false, px_confidence: 0,
       });
       return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: 'duplicate-proof' } }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Atomic pre-AI claim: serializes concurrent webhooks for THIS report and
+    // enforces the daily AI-attempt quota. Refusal here means NO model call.
+    const { data: claim, error: claimError } = await supabase.rpc('claim_price_attempt', {
+      px_report_id: record.id,
+      px_max_attempts_per_day: MAX_AI_ATTEMPTS_PER_DAY,
+    });
+    if (claimError) throw claimError;
+    if (!claim?.ok) {
+      return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: claim?.reason || 'claim-refused' } }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
