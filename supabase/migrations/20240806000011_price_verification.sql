@@ -172,7 +172,7 @@ BEGIN
     RAISE EXCEPTION 'REPORT_NOT_FOUND: %', px_report_id;
   END IF;
 
-  -- Already final (verified/rejected/capped/unlisted): never AI again.
+  -- Already final (verified/rejected/capped/unlisted/ineligible): never AI again.
   IF v_row.ai_verification_status IS DISTINCT FROM 'pending'
      AND v_row.ai_verification_status IS DISTINCT FROM 'processing' THEN
     RETURN jsonb_build_object('ok', false, 'reason', 'not-pending', 'status', v_row.ai_verification_status);
@@ -243,8 +243,8 @@ GRANT EXECUTE ON FUNCTION public.claim_price_attempt(uuid) TO service_role;
 --      unless its place_id resolves in the attractions registry (by place_id
 --      OR google_place_id). Unknown/crafted ids land on 'unlisted' — a terminal,
 --      rewardless state — so rotating fake place ids cannot farm entitlements.
---    - Terminal states (verified/rejected/capped/unlisted) are idempotent no-ops:
---      webhook retries never double-reward.
+--    - Terminal states (verified/rejected/capped/unlisted/ineligible) are idempotent
+--      no-ops: webhook retries never double-reward.
 --    - Ledger transaction_id = the report id itself (deterministic: UUID in, UUID out).
 --    - Stuck 'processing' rows are reclaimable via claim_price_attempt's stale
 --      lease rule; every finalize exits 'processing' one way or another.
@@ -261,7 +261,7 @@ SET search_path = public, extensions
 AS $$
 DECLARE
   v_row public.price_reports%ROWTYPE;
-  v_canonical BOOLEAN;
+  v_canon_place_id TEXT;
 BEGIN
   SELECT * INTO v_row FROM price_reports WHERE id = px_report_id FOR UPDATE;
 
@@ -273,7 +273,8 @@ BEGIN
   IF v_row.ai_verification_status = 'verified'
      OR v_row.ai_verification_status = 'rejected'
      OR v_row.ai_verification_status = 'capped'
-     OR v_row.ai_verification_status = 'unlisted' THEN
+     OR v_row.ai_verification_status = 'unlisted'
+     OR v_row.ai_verification_status = 'ineligible' THEN
     RETURN jsonb_build_object('ok', true, 'idempotent', true, 'status', v_row.ai_verification_status);
   END IF;
 
@@ -288,17 +289,32 @@ BEGIN
     IF v_row.ai_verification_status IS DISTINCT FROM 'processing' THEN
       RETURN jsonb_build_object('ok', false, 'reason', 'not-claimed', 'status', v_row.ai_verification_status);
     END IF;
-    -- ... AND only for a canonical, server-recognized place identity.
-    SELECT EXISTS (
-      SELECT 1 FROM attractions a
-      WHERE a.place_id = v_row.place_id OR a.google_place_id = v_row.place_id
-    ) INTO v_canonical;
-    IF NOT COALESCE(v_canonical, FALSE) THEN
+    -- ... AND only for a canonical, server-recognized place identity ...
+    SELECT a.place_id INTO v_canon_place_id FROM attractions a
+    WHERE a.place_id = v_row.place_id OR a.google_place_id = v_row.place_id
+    LIMIT 1;
+    IF v_canon_place_id IS NULL THEN
       UPDATE price_reports
       SET ai_verification_status = 'unlisted',
           ai_confidence_score = COALESCE(px_confidence, ai_confidence_score)
       WHERE id = px_report_id;
       RETURN jsonb_build_object('ok', true, 'idempotent', false, 'status', 'unlisted');
+    END IF;
+    -- ... AND only when THE SAME user holds a server-recorded visit (stamp)
+    -- for that canonical place. Client-provided evidence is never sufficient:
+    -- both ids come from our own tables. Without a visit, the report is
+    -- terminally 'ineligible' — no reward, no retry that could mint one
+    -- (a later visit + a NEW report is the honest path).
+    IF NOT EXISTS (
+      SELECT 1 FROM stamps s
+      WHERE s.user_id = v_row.user_id
+        AND (s.place_id = v_row.place_id OR s.place_id = v_canon_place_id)
+    ) THEN
+      UPDATE price_reports
+      SET ai_verification_status = 'ineligible',
+          ai_confidence_score = COALESCE(px_confidence, ai_confidence_score)
+      WHERE id = px_report_id;
+      RETURN jsonb_build_object('ok', true, 'idempotent', false, 'status', 'ineligible');
     END IF;
     BEGIN
       INSERT INTO reward_ledger (transaction_id, user_id, amount, xp_amount, reward_type, reference_id)

@@ -103,6 +103,17 @@ async function profileOf(token) {
   return Array.isArray(json) ? json[0] : json;
 }
 
+// Server-recorded visit (stamp) for reward-eligibility setup. Uses the service
+// key like production process_poi_visit would after its own checks — the point
+// under test is finalize's visit gate, not stamp issuance (covered by A4/A12).
+async function seedStamp(userId, placeId) {
+  const { res } = await rest('/rest/v1/stamps', {
+    method: 'POST', token: SERVICE,
+    body: { user_id: userId, place_id: placeId, place_name: 'abuse venue', city: 'Test' },
+  });
+  return res.ok;
+}
+
 async function main() {
   console.log('\n=== RAVA ABUSE SUITE ===\n');
   const A = await makeUser('attacker');
@@ -290,9 +301,11 @@ async function main() {
 
     // A14: finalize state machine — unclaimed verify is denied (no reward);
     // claimed verify credits once; re-finalize is an idempotent no-op.
+    // Uses attractions[1]: [0] is already stamped by A in A4/A12, and stamps
+    // are permanent — shared places would break test isolation.
     {
-      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=1', { token: SERVICE });
-      const canonicalId = Array.isArray(attrRows) ? attrRows[0]?.place_id : null;
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=5', { token: SERVICE });
+      const canonicalId = Array.isArray(attrRows) ? attrRows[1]?.place_id : null;
       const { json: created } = await rest('/rest/v1/price_reports', {
         method: 'POST', token: A.token, prefer: 'return=representation',
         body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `sm ${stamp}`, reported_price: 1, currency: 'TRY', proof_image_url: `${A.id}/sm.jpg`, ai_verification_status: 'pending' },
@@ -302,6 +315,8 @@ async function main() {
         record('A14: finalize state machine', false, 'could not seed price report');
       } else if (!canonicalId) {
         record('A14: finalize state machine', false, 'no seeded attractions to test canonical path (seed missing?)');
+      } else if (!(await seedStamp(A.id, canonicalId))) {
+        record('A14: finalize state machine', false, 'could not seed visit stamp');
       } else {
         const before = await profileOf(A.token);
         const unclaimed = await rest('/rest/v1/rpc/finalize_price_verification', {
@@ -349,9 +364,10 @@ async function main() {
 
     // A19: full price flow on a CANONICAL place — create -> claim -> processing
     // -> finalize verified rewards exactly once; re-finalize is a no-op.
+    // Uses attractions[2] (isolated from A4/A12/A14 stamps).
     {
-      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=1', { token: SERVICE });
-      const canonicalId = Array.isArray(attrRows) ? attrRows[0]?.place_id : null;
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=5', { token: SERVICE });
+      const canonicalId = Array.isArray(attrRows) ? attrRows[2]?.place_id : null;
       const { json: created } = await rest('/rest/v1/price_reports', {
         method: 'POST', token: A.token, prefer: 'return=representation',
         body: { user_id: A.id, place_id: canonicalId || 'abuse', item_name: `flow ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow.jpg`, ai_verification_status: 'pending' },
@@ -361,6 +377,8 @@ async function main() {
         record('A19: price canonical flow', false, 'could not seed price report');
       } else if (!canonicalId) {
         record('A19: price canonical flow', false, 'no seeded attractions (seed missing?)');
+      } else if (!(await seedStamp(A.id, canonicalId))) {
+        record('A19: price canonical flow', false, 'could not seed visit stamp');
       } else {
         const claim = await rest('/rest/v1/rpc/claim_price_attempt', {
           method: 'POST', token: SERVICE, body: { px_report_id: reportId },
@@ -457,6 +475,61 @@ async function main() {
           'A22: stale retry resumes AND consumes quota',
           c1.json?.ok === true && c2.json?.ok === true && c2.json?.resumed === true && Number(calls) === 2,
           `c1=${JSON.stringify(c1.json)} c2=${JSON.stringify(c2.json)} calls=${calls}`
+        );
+      }
+    }
+
+    // A23: canonical place WITHOUT a verified visit earns nothing — the report
+    // lands terminally 'ineligible' (visit-bound entitlement invariant).
+    // A24: cross-user visits are useless — A visited, B reports the same place,
+    // B still gets 'ineligible' (visit must belong to the reporting user).
+    // Uses attractions[3]/[4]: isolated from every other test's stamps.
+    {
+      const { json: attrRows } = await rest('/rest/v1/attractions?select=place_id&limit=5', { token: SERVICE });
+      const noVisitId = Array.isArray(attrRows) ? attrRows[3]?.place_id : null;
+      const crossId = Array.isArray(attrRows) ? attrRows[4]?.place_id : null;
+      const seed = async (token, uid, tag, place) => rest('/rest/v1/price_reports', {
+        method: 'POST', token, prefer: 'return=representation',
+        body: { user_id: uid, place_id: place || 'abuse', item_name: `${tag} ${stamp}`, reported_price: 4, currency: 'TRY', proof_image_url: `${uid}/${tag}.jpg`, ai_verification_status: 'pending' },
+      });
+      if (!noVisitId || !crossId) {
+        record('A23/A24: visit-bound entitlement', false, 'need 5+ seeded attractions (seed missing?)');
+      } else {
+        // A23: A reports a canonical place A never visited.
+        const { json: c23 } = await seed(A.token, A.id, 'novisit', noVisitId);
+        const r23 = Array.isArray(c23) ? c23[0]?.id : c23?.id;
+        let a23 = false;
+        if (r23) {
+          const b23 = await profileOf(A.token);
+          await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: r23 } });
+          const fin = await rest('/rest/v1/rpc/finalize_price_verification', {
+            method: 'POST', token: SERVICE,
+            body: { px_report_id: r23, px_verified: true, px_confidence: 1 },
+          });
+          const a23after = await profileOf(A.token);
+          a23 = fin.json?.status === 'ineligible'
+            && Number(a23after?.wallet_balance || 0) === Number(b23?.wallet_balance || 0);
+        }
+        // A24: A visited; B reports the same canonical place.
+        await seedStamp(A.id, crossId);
+        const { json: c24 } = await seed(B.token, B.id, 'crossvisit', crossId);
+        const r24 = Array.isArray(c24) ? c24[0]?.id : c24?.id;
+        let a24 = false;
+        if (r24) {
+          const b24 = await profileOf(B.token);
+          await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: r24 } });
+          const fin = await rest('/rest/v1/rpc/finalize_price_verification', {
+            method: 'POST', token: SERVICE,
+            body: { px_report_id: r24, px_verified: true, px_confidence: 1 },
+          });
+          const a24after = await profileOf(B.token);
+          a24 = fin.json?.status === 'ineligible'
+            && Number(a24after?.wallet_balance || 0) === Number(b24?.wallet_balance || 0);
+        }
+        record(
+          'A23/A24: no-visit and cross-user visits earn nothing (ineligible)',
+          !!a23 && !!a24,
+          `a23=${a23} a24=${a24}`
         );
       }
     }
