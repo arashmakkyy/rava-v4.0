@@ -1,6 +1,13 @@
 /**
- * Google Directions wrapper for Rava navigation.
- * Prefer Maps JS DirectionsService when available; fall back to REST Directions API.
+ * Routes-library navigation for Rava (Google Maps JavaScript, current API).
+ *
+ * Uses `google.maps.routes.Route.computeRoutes` (importLibrary "routes") —
+ * the supported replacement for the deprecated DirectionsService/DistanceMatrix
+ * JavaScript services. Single client-side path: no Edge Function needed because
+ * routing requires no secret, no quota pooling and no caching on our side.
+ *
+ * Public interface (RouteResult) is unchanged, so useRouteStore and all map UI
+ * keep working without modification.
  */
 
 export type RouteMode = 'walking' | 'driving' | 'transit';
@@ -22,27 +29,48 @@ export interface RouteResult {
 
 declare const google: any;
 
-const MODE_MAP: Record<RouteMode, string> = {
+const TRAVEL_MODE: Record<RouteMode, string> = {
   walking: 'WALKING',
   driving: 'DRIVING',
   transit: 'TRANSIT',
 };
 
-function directionsStatusMessage(status: string): string {
-  switch (status) {
-    case 'REQUEST_DENIED':
-      return 'مسیریابی در دسترس نیست. کلید نقشه دمو است — Billing/API باید در Google Cloud فعال شود.';
-    case 'OVER_QUERY_LIMIT':
-      return 'محدودیت درخواست مسیریابی. کمی بعد دوباره تلاش کن.';
-    case 'ZERO_RESULTS':
-      return 'مسیری بین مبدا و مقصد پیدا نشد.';
-    case 'NOT_FOUND':
-      return 'مبدا یا مقصد پیدا نشد.';
-    case 'INVALID_REQUEST':
-      return 'درخواست مسیریابی نامعتبر است.';
-    default:
-      return `مسیریابی ناموفق بود (${status}).`;
+const faNum = (n: number, digits = 0): string =>
+  Number(n.toFixed(digits)).toLocaleString('fa-IR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+
+function formatDistanceFa(meters: number): string {
+  if (!meters || meters <= 0) return '—';
+  if (meters < 1000) return `${faNum(Math.round(meters))} متر`;
+  return `${faNum(meters / 1000, 1)} کیلومتر`;
+}
+
+function formatDurationFa(totalSeconds: number): string {
+  if (!totalSeconds || totalSeconds <= 0) return '—';
+  const mins = Math.round(totalSeconds / 60);
+  if (mins < 60) return `${faNum(mins)} دقیقه`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return rest === 0 ? `${faNum(hours)} ساعت` : `${faNum(hours)} ساعت و ${faNum(rest)} دقیقه`;
+}
+
+function routesErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (/REQUEST_DENIED|ApiTargetBlockedMapError|Billing/i.test(msg)) {
+    return 'مسیریابی در دسترس نیست. کلید نقشه دمو است — Billing/API باید در Google Cloud فعال شود.';
   }
+  if (/OVER_QUERY_LIMIT|quota|rate/i.test(msg)) {
+    return 'محدودیت درخواست مسیریابی. کمی بعد دوباره تلاش کن.';
+  }
+  if (/ZERO_RESULTS|NOT_FOUND/i.test(msg)) {
+    return 'مسیری بین مبدا و مقصد پیدا نشد.';
+  }
+  if (/INVALID/i.test(msg)) {
+    return 'درخواست مسیریابی نامعتبر است.';
+  }
+  return msg ? `مسیریابی ناموفق بود: ${msg}` : 'مسیریابی ناموفق بود.';
 }
 
 class RoutingServiceImpl {
@@ -53,107 +81,61 @@ class RoutingServiceImpl {
     destination: LatLngLiteral,
     mode: RouteMode = 'walking',
   ): Promise<RouteResult> {
-    if (typeof google !== 'undefined' && google.maps?.DirectionsService) {
-      return this.viaMapsJs(origin, destination, mode);
+    if (typeof google === 'undefined' || !google.maps) {
+      throw new Error('نقشه هنوز لود نشده. چند لحظه صبر کن و دوباره تلاش کن.');
     }
-    return this.viaRest(origin, destination, mode);
-  }
 
-  private viaMapsJs(
-    origin: LatLngLiteral,
-    destination: LatLngLiteral,
-    mode: RouteMode,
-  ): Promise<RouteResult> {
-    return new Promise((resolve, reject) => {
-      const service = new google.maps.DirectionsService();
-      service.route(
-        {
-          origin,
-          destination,
-          travelMode: google.maps.TravelMode[MODE_MAP[mode]],
-          provideRouteAlternatives: false,
-        },
-        (result: any, status: string) => {
-          if (status !== 'OK' || !result?.routes?.[0]) {
-            reject(new Error(directionsStatusMessage(status)));
-            return;
-          }
-          resolve(this.normalizeJsResult(result, mode));
-        },
-      );
-    });
-  }
-
-  private normalizeJsResult(result: any, mode: RouteMode): RouteResult {
-    const route = result.routes[0];
-    const leg = route.legs[0];
-    const path: LatLngLiteral[] = [];
-
-    if (route.overview_path) {
-      for (const p of route.overview_path) {
-        path.push({ lat: p.lat(), lng: p.lng() });
+    try {
+      await google.maps.importLibrary('routes');
+      const RouteCtor = google.maps?.routes?.Route;
+      if (!RouteCtor?.computeRoutes) {
+        throw new Error('Routes library در دسترس نیست.');
       }
-    } else {
-      for (const step of leg.steps || []) {
-        for (const p of step.path || []) {
-          path.push({ lat: p.lat(), lng: p.lng() });
-        }
-      }
-    }
 
-    return {
-      mode,
-      distanceText: leg.distance?.text || '—',
-      durationText: leg.duration?.text || '—',
-      distanceMeters: leg.distance?.value || 0,
-      durationSeconds: leg.duration?.value || 0,
-      path,
-      summary: route.summary,
-    };
+      const { routes } = await RouteCtor.computeRoutes({
+        origin: { lat: origin.lat, lng: origin.lng },
+        destination: { lat: destination.lat, lng: destination.lng },
+        travelMode: TRAVEL_MODE[mode],
+        // Minimal field mask: only what RouteResult needs (billing + latency).
+        fields: ['distanceMeters', 'staticDurationMillis', 'durationMillis', 'path'],
+        language: 'fa',
+        units: 'METRIC',
+      });
+
+      const route = routes?.[0];
+      if (!route) throw new Error('ZERO_RESULTS');
+
+      const distanceMeters = Number(route.distanceMeters) || 0;
+      const durationMillis =
+        Number(route.durationMillis) || Number(route.staticDurationMillis) || 0;
+      const durationSeconds = Math.round(durationMillis / 1000);
+
+      const path: LatLngLiteral[] = Array.isArray(route.path)
+        ? route.path
+            .map((p: any) => ({
+              lat: typeof p?.lat === 'function' ? p.lat() : Number(p?.lat),
+              lng: typeof p?.lng === 'function' ? p.lng() : Number(p?.lng),
+            }))
+            .filter((p: LatLngLiteral) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+        : [];
+
+      if (path.length < 2) throw new Error('ZERO_RESULTS');
+
+      return {
+        mode,
+        distanceText: formatDistanceFa(distanceMeters),
+        durationText: formatDurationFa(durationSeconds),
+        distanceMeters,
+        durationSeconds,
+        path,
+        summary: typeof route.description === 'string' ? route.description : undefined,
+      };
+    } catch (err) {
+      throw new Error(routesErrorMessage(err));
+    }
   }
 
-  private async viaRest(
-    origin: LatLngLiteral,
-    destination: LatLngLiteral,
-    mode: RouteMode,
-  ): Promise<RouteResult> {
-    // Client key from config if present — same Maps key usually enables Directions.
-    const key =
-      (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY) ||
-      '';
-
-    if (!key) {
-      throw new Error('Directions API در دسترس نیست (کلید یا Maps JS لازم است).');
-    }
-
-    const url =
-      `https://maps.googleapis.com/maps/api/directions/json?` +
-      `origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}` +
-      `&mode=${mode}&language=fa&key=${key}`;
-
-    // Note: browser CORS often blocks this; Maps JS path is preferred.
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.status !== 'OK' || !data.routes?.[0]) {
-      throw new Error(directionsStatusMessage(data.status || 'UNKNOWN'));
-    }
-
-    const route = data.routes[0];
-    const leg = route.legs[0];
-    const path = this.decodePolyline(route.overview_polyline?.points || '');
-
-    return {
-      mode,
-      distanceText: leg.distance?.text || '—',
-      durationText: leg.duration?.text || '—',
-      distanceMeters: leg.distance?.value || 0,
-      durationSeconds: leg.duration?.value || 0,
-      path,
-      summary: route.summary,
-    };
-  }
-
-  /** Encoded polyline decoder (Google algorithm). */
+  /** Encoded polyline decoder (kept for any encoded path source). */
   decodePolyline(encoded: string): LatLngLiteral[] {
     const coordinates: LatLngLiteral[] = [];
     let index = 0;
