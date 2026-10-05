@@ -32,6 +32,41 @@ serve(async (req) => {
     // (پالیسی آپلود همین ساختار را enforce می‌کند؛ این چک confused-deputy را می‌بندد.)
     if (!imagePath.startsWith(`${user.id}/`)) throw new Error("Forbidden: ticket ownership mismatch");
 
+    // Daily cost bound BEFORE any download/Gemini work.
+    const dayStart = new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z';
+    const { count: ticketsToday } = await supabase
+      .from('ticket_receipts')
+      .select('image_path', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .gte('created_at', dayStart);
+    if ((ticketsToday ?? 0) >= 20) {
+      return new Response(JSON.stringify({ error: 'daily ticket quota reached' }), {
+        status: 429,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Duplicate policy: same ticket reprocessed returns the ORIGINAL trip —
+    // no new Gemini call, no new timeline row.
+    const { data: receipt } = await supabase
+      .from('ticket_receipts')
+      .select('trip_id')
+      .eq('user_id', user.id)
+      .eq('image_path', imagePath)
+      .maybeSingle();
+    if (receipt?.trip_id) {
+      const { data: existing } = await supabase
+        .from('trips')
+        .select()
+        .eq('id', receipt.trip_id)
+        .maybeSingle();
+      if (existing) {
+        return new Response(JSON.stringify({ success: true, data: existing, duplicate: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     // ۱. دانلود تصویر
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('tickets')
@@ -84,6 +119,11 @@ serve(async (req) => {
       .select().single();
 
     if (insertError) throw insertError;
+
+    // Receipt for duplicate suppression (best-effort: never fails the response).
+    await supabase
+      .from('ticket_receipts')
+      .upsert({ user_id: user.id, image_path: imagePath, trip_id: trip.id }, { onConflict: 'user_id,image_path' });
 
     return new Response(JSON.stringify({ success: true, data: trip }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

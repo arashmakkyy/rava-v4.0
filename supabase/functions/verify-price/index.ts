@@ -11,6 +11,17 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-webhook-secret',
 };
 
+// Server-enforced farming bounds (per user, per server day). Checked BEFORE any
+// Gemini call so capped/duplicated reports cost nothing.
+const MAX_VERIFIED_PER_DAY = 5;
+
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /**
  * INTERNAL webhook processor — NOT an end-user endpoint.
  *
@@ -75,6 +86,30 @@ serve(async (req) => {
       });
     }
 
+    if (typeof record.item_name !== 'string' || record.item_name.trim() === '') {
+      await supabase.rpc('finalize_price_verification', {
+        px_report_id: record.id, px_verified: false, px_confidence: 0,
+      });
+      return new Response(JSON.stringify({ success: true, final: { status: 'rejected' } }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Daily cap BEFORE any Gemini cost: verified rewards per user per server day.
+    const today = new Date().toISOString().slice(0, 10);
+    const { count: verifiedToday } = await supabase
+      .from('price_reports')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', record.user_id)
+      .eq('ai_verification_status', 'verified')
+      .gte('created_at', `${today}T00:00:00.000Z`);
+    if ((verifiedToday ?? 0) >= MAX_VERIFIED_PER_DAY) {
+      await supabase.from('price_reports').update({ ai_verification_status: 'capped' }).eq('id', record.id);
+      return new Response(JSON.stringify({ success: true, final: { status: 'capped' } }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // ۱. دانلود تصویر از استوریج
     const { data: fileData } = await supabase.storage
       .from('price_proofs')
@@ -83,6 +118,28 @@ serve(async (req) => {
     if (!fileData) throw new Error("File not found");
 
     const arrayBuffer = await fileData.arrayBuffer();
+    const proofHash = await sha256Hex(arrayBuffer);
+
+    // Same-proof reuse: byte-identical proof already submitted by this user
+    // (pending or verified) earns nothing twice. No Gemini call for dupes.
+    const { data: dupes } = await supabase
+      .from('price_reports')
+      .select('id')
+      .eq('user_id', record.user_id)
+      .eq('proof_hash', proofHash)
+      .neq('id', record.id)
+      .in('ai_verification_status', ['pending', 'verified'])
+      .limit(1);
+    await supabase.from('price_reports').update({ proof_hash: proofHash }).eq('id', record.id);
+    if (dupes && dupes.length > 0) {
+      await supabase.rpc('finalize_price_verification', {
+        px_report_id: record.id, px_verified: false, px_confidence: 0,
+      });
+      return new Response(JSON.stringify({ success: true, final: { status: 'rejected', reason: 'duplicate-proof' } }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const base64Image = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
 
     // ۲. تحلیل بصری با Gemini

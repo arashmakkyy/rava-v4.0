@@ -21,6 +21,11 @@ const LIVE_API_VERSION = 'v1beta';
 const MAX_LIVE_MINTS_PER_DAY = 10;
 const TOKEN_TTL_MINUTES = 15;
 const NEW_SESSION_WINDOW_SECONDS = 90;
+// Minimum wallet to mint at all: zero fuel NEVER receives a production token.
+// (No reservation debit here by design — an unused/failed mint must not burn
+// fuel. The boundary is: balance gate × daily mint quota × Google-enforced TTL.
+// Reconnects always re-mint, so they re-pass every check.)
+const MIN_FUEL_HOURS_TO_MINT = 0;
 // Live model is locked server-side here AND mirrored in the client sessionManager.
 // Revalidate against current docs before rotating (B0 behavioral probe decides).
 const LIVE_MODEL = AI_MODELS.LIVE;
@@ -60,6 +65,24 @@ serve(async (req) => {
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'unauthorized' }), {
         status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Fuel gate (server-side, authoritative): the client balance check is UX only.
+    // Service-role read so a tampered client state cannot mint.
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+    const { data: profile } = await admin
+      .from('profiles')
+      .select('wallet_balance')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (!profile || Number(profile.wallet_balance) <= MIN_FUEL_HOURS_TO_MINT) {
+      return new Response(JSON.stringify({ error: 'insufficient fuel' }), {
+        status: 402,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
