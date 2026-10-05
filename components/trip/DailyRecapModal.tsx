@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { X, Sparkles, Loader2, MapPin, Coins, Zap, Sunrise } from 'lucide-react';
+import { X, Sparkles, MapPin, Coins, Zap, Sunrise } from 'lucide-react';
 import { useUserStore } from '../../store/useUserStore';
 import { supabase } from '../../services/supabaseClient';
 import { recapService } from '../../services/recapService';

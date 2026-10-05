@@ -1,6 +1,6 @@
 ﻿import React, { useState } from 'react';
 import { motion as _motion, AnimatePresence } from 'framer-motion';
-import { DollarSign, Tag, AlertCircle, CheckCircle2, Sparkles, TrendingDown } from 'lucide-react';
+import { DollarSign, Tag, AlertCircle, CheckCircle2, Sparkles } from 'lucide-react';
 import { GlassCard } from '../core/GlassCard';
 import { useUserStore } from '../../store/useUserStore';
 import { useSurvivalStore } from '../../store/useSurvivalStore';

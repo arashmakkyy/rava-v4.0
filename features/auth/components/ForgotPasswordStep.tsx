@@ -1,6 +1,6 @@
 ﻿import React, { useState } from 'react';
 import { motion as _motion } from 'framer-motion';
-import { Mail, Loader2, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Mail, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { useAuthStore } from '../../../store/useAuthStore';
 import { AudioGraph } from '../../../services/audioGraph';
 import { Input, Button } from '../../../components/ui';

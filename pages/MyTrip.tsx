@@ -222,7 +222,7 @@ export const MyTrip: React.FC = () => {
       )}
 
       <TicketScanner isOpen={showScanner} onClose={() => setShowScanner(false)} />
-      <DailyRecapModal isOpen={showRecap} onClose={() => setShowRecap(false)} />
+      <DailyRecapModal open={showRecap} onClose={() => setShowRecap(false)} />
     </div>
   );
 };

@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { motion as _motion, AnimatePresence } from 'framer-motion';
+import React, { useState } from 'react';
+import { motion as _motion } from 'framer-motion';
 import { Sparkles, Loader2, Calendar, CheckCircle2 } from 'lucide-react';
 import { GlassCard } from '../core/GlassCard';
 import { useUserStore } from '../../store/useUserStore';

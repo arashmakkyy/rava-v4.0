@@ -11,10 +11,8 @@ const CACHE_EXPIRY = 30 * 24 * 60 * 60 * 1000;
 declare const google: any;
 
 class PlaceServiceProvider {
-  private isInitialized: boolean = false;
-
   init() {
-    this.isInitialized = true;
+    // Places readiness is checked lazily per call via waitForGoogle().
   }
 
   async waitForGoogle(): Promise<boolean> {

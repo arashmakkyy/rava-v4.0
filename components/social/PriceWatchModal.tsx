@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { X, Camera, Coins, CheckCircle2, Loader2, Tag, Upload, AlertTriangle } from 'lucide-react';
+import { X, Coins, CheckCircle2, Loader2, Tag, Upload, AlertTriangle } from 'lucide-react';
 import { useUserStore } from '../../store/useUserStore';
 import { supabase } from '../../services/supabaseClient';
 import { ModalShell, ModalCard, IconButton, Input, Button } from '../ui';

@@ -1,6 +1,6 @@
 ﻿import React from 'react';
 import { motion as _motion } from 'framer-motion';
-import { ArrowRight, Star, MapPin } from 'lucide-react';
+import { ArrowRight, Star } from 'lucide-react';
 
 const motion = _motion as any;
 

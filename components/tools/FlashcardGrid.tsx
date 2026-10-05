@@ -12,7 +12,8 @@ export const FlashcardGrid: React.FC = () => {
   const { setActiveFlashcard } = useSurvivalStore();
   const { cityMode } = useUserStore();
 
-  const flashcards = cityMode ? FLASHCARDS_DATA[cityMode] : [];
+  // Tehran has no curated flashcard pack yet (see P0.5 city guard) — never crash, show empty grid.
+  const flashcards = cityMode ? FLASHCARDS_DATA[cityMode as 'Istanbul' | 'Dubai'] ?? [] : [];
 
   return (
     <div className="space-y-6">

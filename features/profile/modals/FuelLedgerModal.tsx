@@ -65,7 +65,7 @@ export const FuelLedgerModal: React.FC<FuelLedgerModalProps> = ({ onClose }) => 
               >
                 <div className="text-right">
                   <h4 className={`text-rava-sm font-black ${tx.amount > 0 ? 'text-white' : 'text-white/80'}`}>
-                    {getLabel(tx.type, tx.reason || tx.reference_id)}
+                    {getLabel(tx.type, tx.reason || tx.reference_id || undefined)}
                   </h4>
                   <p className="mt-1 text-rava-xs font-bold text-white/25">
                     {new Date(tx.created_at).toLocaleString('fa-IR', {

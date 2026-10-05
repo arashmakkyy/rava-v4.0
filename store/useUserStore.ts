@@ -156,7 +156,7 @@ export const useUserStore = create<CleanUserState>()(
               table: 'profiles',
               filter: `id=eq.${user.id}`,
             },
-            (payload) => {
+            (payload: { new: Record<string, any> }) => {
               const newBalance = payload.new.wallet_balance;
               const newXP = payload.new.xp_level;
               const oldBalance = get().wallet.balance;
@@ -195,7 +195,7 @@ export const useUserStore = create<CleanUserState>()(
 
         if (data) {
           set({
-            fuelTransactions: data.map((t) => ({
+            fuelTransactions: data.map((t: { transaction_id: string; amount: number; reward_type: string; reference_id: string | null; created_at: string }) => ({
               id: t.transaction_id,
               amount: t.amount,
               type: t.reward_type,
@@ -396,7 +396,7 @@ export const useUserStore = create<CleanUserState>()(
                 currentStreak: profile.current_streak ?? 0,
                 lastActiveDate: profile.last_active_date ?? null,
                 stamps:
-                  stamps?.map((s) => ({
+                  stamps?.map((s: { id: string; place_id: string; place_name: string; created_at: string; city?: string | null }) => ({
                     id: s.id,
                     placeId: s.place_id,
                     placeName: s.place_name,
@@ -405,7 +405,7 @@ export const useUserStore = create<CleanUserState>()(
                   })) || [],
               },
               favorites:
-                favs?.map((f) => ({
+                favs?.map((f: { id: string; place_id: string; place_snapshot: Favorite['snapshot'] }) => ({
                   id: f.id,
                   placeId: f.place_id,
                   snapshot: f.place_snapshot,

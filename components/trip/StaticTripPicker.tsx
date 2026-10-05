@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { motion as _motion } from 'framer-motion';
-import { Copy, Loader2, MapPinned } from 'lucide-react';
+import { Copy, MapPinned } from 'lucide-react';
 import { getStaticTripsForCity } from '../../data/staticTrips';
 import { useUserStore } from '../../store/useUserStore';
 import { CityMode } from '../../types';

@@ -128,6 +128,8 @@ export interface TripEvent {
     reservationId?: string;
     notes?: string;
     price?: number;
+    placeId?: string;
+    placeName?: string;
   };
 }
 
@@ -220,8 +222,8 @@ export interface FuelTransaction {
   id: string;
   amount: number;
   type: string;
-  /** Reason / reference text stored in reference_id for usage rows */
-  reference_id?: string;
+  /** Reason / reference text stored in reference_id for usage rows (nullable in DB) */
+  reference_id?: string | null;
   reason?: string;
   created_at: string;
 }

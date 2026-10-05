@@ -1,5 +1,11 @@
 /**
- * Apply remaining Rava migrations with retries (seed can time out once).
+ * MANUAL HELPER / RUNNER — not the migration system source of truth.
+ * Source of truth is the Supabase migration history (supabase_migrations.schema_migrations).
+ * This script re-executes whole SQL files from FROM_MIGRATION onward; it tracks
+ * no history, no checksums, no pending state. Safe to re-run only because the
+ * SQL itself is written idempotently (IF NOT EXISTS / CREATE OR REPLACE / ON CONFLICT).
+ * All new schema changes must be forward-only migrations, never rewrites of old files.
+ *
  * SUPABASE_ACCESS_TOKEN required. Optional: FROM_MIGRATION=20240806000003
  */
 import fs from 'node:fs';

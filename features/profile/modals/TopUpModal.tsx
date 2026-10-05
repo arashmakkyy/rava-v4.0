@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { X, Zap, CreditCard, ShieldCheck, Check, Loader2 } from 'lucide-react';
+import { X, Zap, CreditCard, ShieldCheck } from 'lucide-react';
 import { useSurvivalStore } from '../../../store/useSurvivalStore';
 import { AudioGraph } from '../../../services/audioGraph';
 import { supabase } from '../../../services/supabaseClient';

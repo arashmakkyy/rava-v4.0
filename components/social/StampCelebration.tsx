@@ -1,6 +1,6 @@
 
 import React, { useEffect } from 'react';
-import { motion as _motion, AnimatePresence } from 'framer-motion';
+import { motion as _motion } from 'framer-motion';
 import { Award, Zap, Star, Sparkles } from 'lucide-react';
 
 const motion = _motion as any;

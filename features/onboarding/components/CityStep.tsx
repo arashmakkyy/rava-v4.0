@@ -6,14 +6,16 @@ import { CityMode } from '../../../types';
 
 const motion = _motion as any;
 
-const CITIES = [
-  { id: 'Istanbul' as CityMode, name: 'استانبول', desc: 'شهر رنگ‌ها و طعم‌های شرقی', img: 'https://images.unsplash.com/photo-1524231757912-21f4fe3a7200?auto=format&q=75&w=600' },
-  { id: 'Dubai' as CityMode, name: 'دبی', desc: 'تجربه دنیای مدرن و لوکس', img: 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?auto=format&q=75&w=600' },
+type SelectableCity = Exclude<CityMode, null | 'Tehran'>;
+
+const CITIES: { id: SelectableCity; name: string; desc: string; img: string }[] = [
+  { id: 'Istanbul', name: 'استانبول', desc: 'شهر رنگ‌ها و طعم‌های شرقی', img: 'https://images.unsplash.com/photo-1524231757912-21f4fe3a7200?auto=format&q=75&w=600' },
+  { id: 'Dubai', name: 'دبی', desc: 'تجربه دنیای مدرن و لوکس', img: 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?auto=format&q=75&w=600' },
 ];
 
 interface CityStepProps {
   selectedCity: CityMode;
-  onSelect: (city: string) => void;
+  onSelect: (city: SelectableCity) => void;
 }
 
 export const CityStep: React.FC<CityStepProps> = ({ selectedCity, onSelect }) => (

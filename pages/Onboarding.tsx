@@ -33,7 +33,8 @@ export const Onboarding: React.FC = () => {
     if (!selection.city || !selection.vibe || !selection.crew) return;
     setLoading(true);
     AudioGraph.getInstance().playCoinSound();
-    await finalizeOnboarding({ ...selection, isTravelingNow });
+    const { city, vibe, crew } = selection;
+    await finalizeOnboarding({ city, vibe, crew, isTravelingNow });
   };
 
   return (
@@ -51,7 +52,7 @@ export const Onboarding: React.FC = () => {
         <AnimatePresence mode="wait">
           {step === 1 && (
             <motion.div key="step1" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-              <CityStep selectedCity={selection.city} onSelect={(city) => setSelection({ ...selection, city: city as any })} />
+              <CityStep selectedCity={selection.city} onSelect={(city) => setSelection({ ...selection, city })} />
 
               {selection.city && (
                 <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">

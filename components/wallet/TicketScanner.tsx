@@ -10,10 +10,11 @@ import { X } from 'lucide-react';
 const motion = _motion as any;
 
 interface TicketScannerProps {
+  isOpen: boolean;
   onClose: () => void;
 }
 
-export const TicketScanner: React.FC<TicketScannerProps> = ({ onClose }) => {
+export const TicketScanner: React.FC<TicketScannerProps> = ({ isOpen, onClose }) => {
   const syncWithCloud = useUserStore((s) => s.syncWithCloud);
   const [step, setStep] = useState<'upload' | 'scanning' | 'success' | 'error'>('upload');
   const [errorMsg, setErrorMsg] = useState('');
@@ -45,7 +46,7 @@ export const TicketScanner: React.FC<TicketScannerProps> = ({ onClose }) => {
   };
 
   return (
-    <ModalShell open={true} onClose={onClose} contentClassName="h-full max-w-none">
+    <ModalShell open={isOpen} onClose={onClose} contentClassName="h-full max-w-none">
       <div className="relative flex min-h-[85vh] flex-col items-center justify-center p-8">
         <div className="absolute end-6 top-6 pt-safe">
           <IconButton icon={X} label="بستن" onClick={onClose} size="md" />

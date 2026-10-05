@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Database, Trash2, Globe, Check, Loader2, Languages } from 'lucide-react';
+import { Settings, Database, Trash2, Globe, Check, Languages } from 'lucide-react';
 import { useSurvivalStore } from '../../../store/useSurvivalStore';
 import { useAuthStore } from '../../../store/useAuthStore';
 import { AudioGraph } from '../../../services/audioGraph';

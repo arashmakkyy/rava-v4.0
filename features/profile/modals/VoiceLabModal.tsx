@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic2, Play, Check, Headphones } from 'lucide-react';
+import { Play, Check, Headphones } from 'lucide-react';
 import { useAuthStore } from '../../../store/useAuthStore';
 import { AudioGraph } from '../../../services/audioGraph';
 import { ModalShell, ModalCard, ModalHeader, Button } from '../../../components/ui';

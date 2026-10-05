@@ -5,7 +5,7 @@ import { FlashcardModal } from '../components/tools/FlashcardModal';
 import { SubwayMap } from '../components/tools/SubwayMap';
 import { GlassCard } from '../components/core/GlassCard';
 import { useSurvivalStore } from '../store/useSurvivalStore';
-import { Phone, ShieldCheck } from 'lucide-react';
+import { Phone } from 'lucide-react';
 import { PageHeader, Button } from '../components/ui';
 
 export const Tools: React.FC = () => {

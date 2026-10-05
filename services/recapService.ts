@@ -184,8 +184,8 @@ export async function fetchTodayChatHighlights(userId: string, date = todayIso()
 
     if (!data?.length) return [];
     return data
-      .filter((r) => r.role === 'model' && r.content)
-      .map((r) => String(r.content).slice(0, 120))
+      .filter((r: { role: unknown; content: unknown }) => r.role === 'model' && r.content)
+      .map((r: { content: unknown }) => String(r.content).slice(0, 120))
       .slice(0, 3);
   } catch {
     return [];

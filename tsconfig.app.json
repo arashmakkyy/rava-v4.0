@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true
+  },
+  "include": [
+    "App.tsx",
+    "index.tsx",
+    "config.ts",
+    "constants.ts",
+    "types.ts",
+    "tailwind.config.ts",
+    "components",
+    "features",
+    "hooks",
+    "pages",
+    "services",
+    "store",
+    "data",
+    "prompts",
+    "types",
+    "utils"
+  ],
+  "exclude": ["node_modules", "dist"],
+  "references": []
+}

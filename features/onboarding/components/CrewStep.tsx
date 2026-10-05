@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion as _motion } from 'framer-motion';
-import { Sparkles, Loader2, ArrowRight } from 'lucide-react';
+import { Sparkles, ArrowRight } from 'lucide-react';
 import { GlassCard } from '../../../components/core/GlassCard';
 import { Button } from '../../../components/ui';
 

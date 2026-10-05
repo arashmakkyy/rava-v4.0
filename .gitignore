@@ -11,6 +11,7 @@ dist/
 dist-ssr/
 build/
 *.local
+*.tsbuildinfo
 
 # --- Secret Keys (حیاتی برای امنیت بیزنس) ---
 .env

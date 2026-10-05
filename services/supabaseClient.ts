@@ -1,5 +1,5 @@
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@^2.48.1';
+import { createClient } from '@supabase/supabase-js';
 import { APP_CONFIG } from '../config';
 
 /**

@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { motion as _motion, AnimatePresence } from 'framer-motion';
 import { Map as MapIcon, Loader2, ZoomIn, ZoomOut, Maximize2, X, Navigation2, Zap } from 'lucide-react';
 import { GlassCard } from '../core/GlassCard';
 import { useUserStore } from '../../store/useUserStore';
 import { useMapStore } from '../../store/useMapStore';
 import { useSurvivalStore } from '../../store/useSurvivalStore';
+import type { CityMode } from '../../types';
 import { SUBWAY_STATIONS } from '../../constants';
 import { calculateDistance } from '../../utils/geoUtils';
 import { GeoPoint } from '../../utils/geoPoint';
@@ -21,18 +22,19 @@ export const SubwayMap: React.FC = () => {
   const [scale, setScale] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const mapUrls = {
+  // Tehran has no curated subway pack yet (see P0.5 city guard) — lookups stay undefined-safe.
+  const mapUrls: Partial<Record<NonNullable<CityMode>, string>> = {
     Istanbul: 'https://www.metro.istanbul/Content/assets/img/rayli-sistemler-haritasi.png',
     Dubai: 'https://www.visitdubai.com/-/media/gathercontent/article/d/dubai-metro-guide/media/dubai-metro-guide-dubai-metro-map-1.jpg',
   };
 
-  const currentMap = cityMode ? mapUrls[cityMode] : null;
+  const currentMap = cityMode ? mapUrls[cityMode] ?? null : null;
 
   const nearestStation = useMemo(() => {
     const geo = GeoPoint.fromArray(userLocation);
-    if (!geo || !cityMode || !SUBWAY_STATIONS[cityMode]) return null;
+    const stations = cityMode ? SUBWAY_STATIONS[cityMode as 'Istanbul' | 'Dubai'] : undefined;
+    if (!geo || !stations) return null;
 
-    const stations = SUBWAY_STATIONS[cityMode];
     let closest = stations[0];
     let minDistance = Infinity;
 

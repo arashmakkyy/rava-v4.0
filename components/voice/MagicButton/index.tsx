@@ -41,7 +41,7 @@ export const MagicButton: React.FC = () => {
       <motion.button
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        onClick={(e) => {
+        onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
           e.stopPropagation();
           setShowTranscript(!showTranscript);
         }}
