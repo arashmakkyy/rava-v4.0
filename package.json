@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck:edge": "deno check supabase/functions/verify-price/index.ts supabase/functions/process-ticket/index.ts supabase/functions/the-dreamer/index.ts supabase/functions/mint-live-token/index.ts supabase/functions/ai-complete/index.ts",
     "preview": "vite preview",
     "fetch:places": "node scripts/fetch_places.mjs",
     "db:migrate": "node scripts/apply_migrations.mjs",

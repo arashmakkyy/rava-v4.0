@@ -4,6 +4,8 @@ Official name: **Rava** (EN) / **راوا** (FA)
 
 Production build: `npm run build` (verified passing).
 
+Status legend used below: **implemented** (in repo) vs **deployed/configured** (on Supabase/production) vs **verified** (exercised against production). These are NOT the same — nothing here is marked verified until it runs against production.
+
 ## Before go-live
 
 ### 1. Supabase migrations — APPLIED on `thmsfdugojokxtemnqdw` (2026-08)
@@ -41,7 +43,8 @@ SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
 > whole files and tracks no history. Source of truth is the Supabase migration
 > history. All new schema changes must be forward-only migrations.
 
-Re-apply (idempotent) if needed:
+Re-run history: source of truth is the Supabase migration history, not this runner.
+The script below is manual-only (re-executes whole files, tracks no history).
 
 ```
 SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
@@ -49,11 +52,12 @@ SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
 
 Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`, `mint-live-token`, `ai-complete`). Frontend keeps the **anon** key only — no Gemini credential is bundled anymore (Live uses ephemeral tokens, other AI calls use the `ai-complete` proxy).
 
-New/changed Edge Functions to deploy from repo:
-- `mint-live-token` (needs secrets: `GEMINI_API_KEY`, plus `SUPABASE_URL` + `SUPABASE_ANON_KEY` for user JWT quota checks)
-- `ai-complete` (same secrets as above)
-- `verify-price` (rewritten trust model: needs NEW secret `VERIFY_PRICE_WEBHOOK_SECRET`, mirrored as `x-webhook-secret` header on the Database Webhook for `price_reports` INSERT)
-- `process-ticket` (redeploy: ownership check)
+New/changed Edge Functions to deploy from repo (status: **implemented**, NOT yet deployed):
+- `mint-live-token` (needs secrets: `GEMINI_API_KEY`, plus `SUPABASE_URL` + `SUPABASE_ANON_KEY` for user JWT quota checks; user-JWT caller, gateway JWT check stays ON)
+- `ai-complete` (same secrets as above; user-JWT caller)
+- `verify-price` (internal webhook processor: `supabase/config.toml` sets `verify_jwt = false`; needs NEW secret `VERIFY_PRICE_WEBHOOK_SECRET`, mirrored as `x-webhook-secret` header on the Database Webhook for `price_reports` INSERT; handler re-reads the row and enforces ownership/status)
+- `the-dreamer` (internal scheduled job: `verify_jwt = false`; needs NEW secret `THE_DREAMER_JOB_SECRET` sent as `x-job-secret` by the scheduler; ordinary user JWTs are rejected with 403)
+- `process-ticket` (redeploy: ownership check; user-JWT caller, gateway JWT check stays ON)
 
 **Verified remote state**
 - Istanbul curated POIs: 31 · Dubai: 28

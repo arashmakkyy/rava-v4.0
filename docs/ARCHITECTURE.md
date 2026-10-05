@@ -214,7 +214,7 @@ Optimistic UI / action
 
 ### Gemini / GenAI
 - **Client Live:** `useGeminiLive` via `@google/genai` + `APP_CONFIG.GOOGLE.GEMINI_API_KEY` (also checks `process.env.API_KEY`)
-- **Client text:** `PlaceService.getAIVibeCheck` (`gemini-1.5-flash`)
+- **Client text:** all non-Live AI goes through the authenticated `ai-complete` proxy (server-side prompts, per-user quota); model IDs live in `supabase/functions/_shared/models.ts`, never in client code
 - **Edge:** `process-ticket`, `verify-price`, `the-dreamer` use server `GEMINI_API_KEY`
 
 ### Storage

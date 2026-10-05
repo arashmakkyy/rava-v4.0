@@ -78,7 +78,7 @@ Verified from `package.json`, `index.html`, `vite.config.ts`, `config.ts`, and s
 ### Infrastructure / tooling
 - npm scripts: `dev`, `build`, `preview`
 - Supabase Edge Functions under `supabase/functions/` (`process-ticket`, `verify-price`, `the-dreamer`)
-- PWA assets present: `manifest.json`, `sw.js` — **service worker registration is not present** in `index.tsx` / `App.tsx` (assets only)
+- PWA assets present: `manifest.json`, `sw.js` — service worker registers in production only (`index.tsx`); offline is best-effort (visited shell/assets + narratives/images cache), NOT full offline PWA
 
 ### External services
 - Google Maps Platform (Maps JS, Places New, Map ID cloud styling)

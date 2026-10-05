@@ -72,8 +72,32 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // ۳. استراتژی پیش‌فرض برای سایر درخواست‌ها (Network First)
+  // ۳. پیش‌فرض برای سایر درخواست‌ها (Network First + put برای شل آفلاین).
+  // فقط GET هم‌منبع از جنس سند/اسکریپت/استایل کش می‌شود تا ریلود آفلاینِ
+  // صفحاتِ قبلاً دیده‌شده کار کند. آفلاین کامل PWA نیست (best-effort).
   event.respondWith(
-    fetch(request).catch(() => caches.match(request))
+    fetch(request)
+      .then((networkResponse) => {
+        try {
+          const sameOrigin = url.origin === self.location.origin;
+          const cacheable =
+            request.method === 'GET' &&
+            sameOrigin &&
+            (request.destination === 'document' ||
+              request.destination === 'script' ||
+              request.destination === 'style');
+          if (cacheable && networkResponse && networkResponse.ok) {
+            const copy = networkResponse.clone();
+            caches.open(DYNAMIC_CACHE).then((cache) => {
+              cache.put(request, copy);
+              limitCacheSize(DYNAMIC_CACHE, MAX_DYNAMIC_ITEMS);
+            }).catch(() => {});
+          }
+        } catch {
+          /* caching is best-effort; never break the response */
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(request))
   );
 });
