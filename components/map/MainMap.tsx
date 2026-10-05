@@ -5,6 +5,7 @@ import { useMapStore } from '../../store/useMapStore';
 import { useDiscoveryStore } from '../../store/useDiscoveryStore';
 import { useRouteStore } from '../../store/useRouteStore';
 import { PlaceService } from '../../services/placeService';
+import { footprintService } from '../../services/social/footprintService';
 import { selectPOI } from '../../services/poiSelectionService';
 import { cityPackService } from '../../services/cityPack';
 import { GeoPoint } from '../../utils/geoPoint';
@@ -128,10 +129,12 @@ const MapController = () => {
   const map = useMap();
   const { cityMode, setCityMode } = useUserStore(); 
   const { fetchCurated } = useDiscoveryStore();
-  const { setUserLocation } = useMapStore();
+  const { setUserLocation, setNearbyFootprints } = useMapStore();
   
   const processingClickRef = useRef<boolean>(false);
   const isCityInitialized = useRef<boolean>(false);
+  // Last coords a footprint fetch was issued for (refetch only after ~1km move).
+  const lastFootprintFetchRef = useRef<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
     if (!cityMode && !isCityInitialized.current) {
@@ -172,6 +175,13 @@ const MapController = () => {
     PlaceService.init();
     fetchCurated(cityMode).catch(err => console.error("Fetch curated failed:", err));
     cityPackService.onCityChange(cityMode).catch(() => {});
+
+    // New city = new area: refresh footprints immediately for the current fix.
+    const currentLoc = useMapStore.getState().userLocation;
+    if (currentLoc) {
+      lastFootprintFetchRef.current = { lat: currentLoc[0], lng: currentLoc[1] };
+      footprintService.getNearby(currentLoc[0], currentLoc[1]).then(setNearbyFootprints).catch(() => {});
+    }
     
     const center = cityMode === 'Istanbul' 
       ? new GeoPoint(41.0082, 28.9784) 
@@ -187,7 +197,20 @@ const MapController = () => {
 
     try {
       const watchId = navigator.geolocation.watchPosition(
-        (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+        (pos) => {
+          const loc: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+          setUserLocation(loc);
+          // Rehydration path: verified-nearby + own pending footprints from the DB,
+          // so a refresh never wipes what the user posted. Throttled by distance.
+          const last = lastFootprintFetchRef.current;
+          const movedKm = last
+            ? Math.hypot(loc[0] - last.lat, loc[1] - last.lng) * 111
+            : Infinity;
+          if (movedKm > 1) {
+            lastFootprintFetchRef.current = { lat: loc[0], lng: loc[1] };
+            footprintService.getNearby(loc[0], loc[1]).then(setNearbyFootprints).catch(() => {});
+          }
+        },
         (err) => {
           if (err.code === 1) {
             useMapStore.getState().setLocationPermissionDenied(true);

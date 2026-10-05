@@ -24,7 +24,8 @@ export const footprintService = {
       user: f.user_name,
       date: new Date(f.created_at).toLocaleDateString('fa-IR'),
       lat: f.lat,
-      lng: f.lng
+      lng: f.lng,
+      is_verified: f.is_verified !== false,
     }));
   },
 
