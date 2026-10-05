@@ -340,10 +340,17 @@ export const useUserStore = create<CleanUserState>()(
       toggleFavorite: async (poi: POI) => {
         const { favorites } = get();
         const isFav = favorites.some((f) => f.placeId === poi.id);
+        const prev = favorites;
 
         if (isFav) {
           set({ favorites: favorites.filter((f) => f.placeId !== poi.id) });
-          await supabase.from('favorites').delete().eq('place_id', poi.id);
+          const { error } = await supabase.from('favorites').delete().eq('place_id', poi.id);
+          if (error) {
+            // Revert: never leave a fake unfavorite in the UI.
+            set({ favorites: prev });
+            console.error('[toggleFavorite] delete failed, reverted:', error);
+            throw error;
+          }
         } else {
           const newFav: Favorite = {
             id: crypto.randomUUID(),
@@ -358,10 +365,15 @@ export const useUserStore = create<CleanUserState>()(
             },
           };
           set({ favorites: [newFav, ...favorites] });
-          await supabase.from('favorites').insert({
+          const { error } = await supabase.from('favorites').insert({
             place_id: poi.id,
             place_snapshot: newFav.snapshot,
           });
+          if (error) {
+            set({ favorites: prev });
+            console.error('[toggleFavorite] insert failed, reverted:', error);
+            throw error;
+          }
         }
         AudioGraph.haptic(10);
       },

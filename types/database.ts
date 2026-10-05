@@ -751,6 +751,8 @@ export type Database = {
           ai_confidence_score: number | null;
           report_date: string | null;
           proof_hash: string | null;
+          ai_calls_made: number;
+          processing_started_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -765,6 +767,8 @@ export type Database = {
           ai_confidence_score?: number | null;
           report_date?: string | null;
           proof_hash?: string | null;
+          ai_calls_made?: number;
+          processing_started_at?: string | null;
           created_at?: string;
         };
         Update: {
@@ -779,6 +783,8 @@ export type Database = {
           ai_confidence_score?: number | null;
           report_date?: string | null;
           proof_hash?: string | null;
+          ai_calls_made?: number;
+          processing_started_at?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -789,6 +795,7 @@ export type Database = {
           usage_date: string;
           live_mints: number;
           proxy_calls: number;
+          price_attempts: number;
           created_at: string;
           updated_at: string;
         };
@@ -797,6 +804,7 @@ export type Database = {
           usage_date?: string;
           live_mints?: number;
           proxy_calls?: number;
+          price_attempts?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -805,6 +813,7 @@ export type Database = {
           usage_date?: string;
           live_mints?: number;
           proxy_calls?: number;
+          price_attempts?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -815,18 +824,54 @@ export type Database = {
           user_id: string;
           image_path: string;
           trip_id: string | null;
+          status: string;
+          attempts: number;
+          last_attempt_at: string | null;
           created_at: string;
         };
         Insert: {
           user_id: string;
           image_path: string;
           trip_id?: string | null;
+          status?: string;
+          attempts?: number;
+          last_attempt_at?: string | null;
           created_at?: string;
         };
         Update: {
           user_id?: string;
           image_path?: string;
           trip_id?: string | null;
+          status?: string;
+          attempts?: number;
+          last_attempt_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      live_leases: {
+        Row: {
+          id: string;
+          user_id: string;
+          minutes: number;
+          cost_hours: number;
+          status: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          minutes: number;
+          cost_hours: number;
+          status?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          minutes?: number;
+          cost_hours?: number;
+          status?: string;
           created_at?: string;
         };
         Relationships: [];
@@ -906,8 +951,20 @@ export type Database = {
         Args: { px_lease_id: string };
         Returns: Json;
       };
+      claim_ticket_attempt: {
+        Args: { px_user_id: string; px_image_path: string };
+        Returns: Json;
+      };
+      fail_ticket_attempt: {
+        Args: { px_user_id: string; px_image_path: string };
+        Returns: Json;
+      };
+      complete_ticket_attempt: {
+        Args: { px_user_id: string; px_image_path: string; px_trip_id: string };
+        Returns: Json;
+      };
       claim_price_attempt: {
-        Args: { px_report_id: string; px_max_attempts_per_day: number };
+        Args: { px_report_id: string };
         Returns: Json;
       };
       record_daily_activity: {

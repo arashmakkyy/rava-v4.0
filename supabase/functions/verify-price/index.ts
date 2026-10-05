@@ -13,7 +13,7 @@ const corsHeaders = {
 
 // Server-enforced farming bounds (per user, per server day). Attempt quota is
 // INDEPENDENT of verification outcome: garbage burns quota too.
-const MAX_AI_ATTEMPTS_PER_DAY = 10;
+// (The numeric cap lives inside claim_price_attempt; this file sends no policy.)
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -150,9 +150,9 @@ serve(async (req) => {
 
     // Atomic pre-AI claim: serializes concurrent webhooks for THIS report and
     // enforces the daily AI-attempt quota. Refusal here means NO model call.
+    // (Quota policy lives inside the RPC — this call carries no parameters.)
     const { data: claim, error: claimError } = await supabase.rpc('claim_price_attempt', {
       px_report_id: record.id,
-      px_max_attempts_per_day: MAX_AI_ATTEMPTS_PER_DAY,
     });
     if (claimError) throw claimError;
     if (!claim?.ok) {

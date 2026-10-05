@@ -88,22 +88,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_price_proof_per_user
 CREATE INDEX IF NOT EXISTS idx_price_reports_status ON public.price_reports (ai_verification_status);
 
 -- -------------------------------------------------------------------------------------
--- 2c. Atomic pre-AI attempt claim (the cost gate).
+-- 2d. Server-owned insert fields (BEFORE INSERT trigger).
+--    RLS alone cannot stop a client from sending security-sensitive columns, so
+--    the database itself forces them on every user-session insert:
+--      user_id, report_date, created_at, ai_verification_status='pending',
+--      ai_calls_made=0, proof_hash=NULL, processing_started_at=NULL.
+--    Client supplies ONLY domain input: place_id, item_name, reported_price,
+--    currency, proof_image_url. place_id + item_name are mandatory (canonical
+--    identity; NULL would bypass the entitlement uniqueness).
+--    Guarded by auth.uid() IS NOT NULL so service_role/internal writes pass
+--    through untouched (service paths are trusted and have no user session).
+-- -------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.enforce_price_report_authorship()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  NEW.user_id := auth.uid();
+  NEW.report_date := CURRENT_DATE;
+  NEW.created_at := NOW();
+  NEW.ai_verification_status := 'pending';
+  NEW.ai_calls_made := 0;
+  NEW.proof_hash := NULL;
+  NEW.processing_started_at := NULL;
+
+  IF NEW.place_id IS NULL OR btrim(NEW.place_id) = '' THEN
+    RAISE EXCEPTION 'PLACE_REQUIRED: price report needs a place';
+  END IF;
+  IF NEW.item_name IS NULL OR btrim(NEW.item_name) = '' THEN
+    RAISE EXCEPTION 'ITEM_REQUIRED: price report needs an item';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_price_reports_authorship ON public.price_reports;
+CREATE TRIGGER trg_price_reports_authorship
+  BEFORE INSERT ON public.price_reports
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_price_report_authorship();
+
+-- -------------------------------------------------------------------------------------
+-- 2c. Atomic pre-AI attempt claim (the cost gate). NO policy parameters: the cap
+--    is a server constant below, so no caller can override it.
 --    Called by verify-price BEFORE any Gemini traffic, in ONE transaction:
 --     1. Locks the report row (FOR UPDATE): concurrent webhooks serialize here.
---     2. Non-pending rows are refused (retry of a final report = no-op).
---     3. A row already `processing` is refused UNLESS its lease went stale
---        (>10min: presumed crashed worker) — then it is reclaimed WITHOUT
---        consuming new quota (the crashed attempt already paid).
---     4. Fresh claims consume one unit of the user's DAILY AI-ATTEMPT quota
---        (independent of verification outcome: garbage burns quota too).
---        Over quota -> status 'capped', no AI allowed.
+--     2. Atomically reserves one unit of the user's DAILY AI-ATTEMPT quota via
+--        the ai_usage counter row (upsert + FOR UPDATE + check + increment in the
+--        SAME transaction as the report lock — parallel claims for DIFFERENT
+--        reports serialize on the counter row, so N parallel requests grant at
+--        most N=cap claims, never N+5).
+--     3. Quota counts ATTEMPTS (garbage/rejected burns quota too), never outcomes.
 --    Reward entitlement (finalize_*) and attempt quota are DELIBERATELY separate
 --    concepts sharing only this row's counters.
 -- -------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.claim_price_attempt(
-  px_report_id UUID,
-  px_max_attempts_per_day INTEGER
+  px_report_id UUID
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -114,11 +160,8 @@ DECLARE
   v_row public.price_reports%ROWTYPE;
   v_used INTEGER;
   STALE_AFTER CONSTANT INTERVAL := '10 minutes';
+  MAX_ATTEMPTS_PER_DAY CONSTANT INTEGER := 10;
 BEGIN
-  IF px_max_attempts_per_day IS NULL OR px_max_attempts_per_day <= 0 THEN
-    RAISE EXCEPTION 'Invalid attempt cap';
-  END IF;
-
   SELECT * INTO v_row FROM price_reports WHERE id = px_report_id FOR UPDATE;
 
   IF NOT FOUND THEN
@@ -146,19 +189,26 @@ BEGIN
     RETURN jsonb_build_object('ok', true, 'resumed', true);
   END IF;
 
-  -- Fresh claim: enforce the daily AI-attempt quota first.
-  SELECT COUNT(*) INTO v_used
-  FROM price_reports
-  WHERE user_id = v_row.user_id
-    AND created_at::date = CURRENT_DATE
-    AND ai_calls_made > 0;
+  -- Fresh claim: atomically reserve one unit of the daily AI-attempt quota.
+  INSERT INTO ai_usage (user_id, usage_date, price_attempts)
+  VALUES (v_row.user_id, CURRENT_DATE, 0)
+  ON CONFLICT (user_id, usage_date) DO NOTHING;
 
-  IF v_used >= px_max_attempts_per_day THEN
+  SELECT price_attempts INTO v_used
+  FROM ai_usage
+  WHERE user_id = v_row.user_id AND usage_date = CURRENT_DATE
+  FOR UPDATE;
+
+  IF v_used >= MAX_ATTEMPTS_PER_DAY THEN
     UPDATE price_reports
     SET ai_verification_status = 'capped'
     WHERE id = px_report_id AND ai_verification_status = 'pending';
     RETURN jsonb_build_object('ok', false, 'reason', 'capped');
   END IF;
+
+  UPDATE ai_usage
+  SET price_attempts = price_attempts + 1, updated_at = NOW()
+  WHERE user_id = v_row.user_id AND usage_date = CURRENT_DATE;
 
   UPDATE price_reports
   SET ai_verification_status = 'processing',
@@ -170,18 +220,25 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid, integer) FROM anon;
-REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid, integer) FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.claim_price_attempt(uuid, integer) TO service_role;
+REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid) FROM anon;
+REVOKE ALL ON FUNCTION public.claim_price_attempt(uuid) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_price_attempt(uuid) TO service_role;
 
 -- -------------------------------------------------------------------------------------
 -- 3. Atomic finalize: verdict + reward in ONE transaction.
 --    Called ONLY by the verify-price Edge Function (service_role).
 --    - Locks the report row (FOR UPDATE): concurrent invocations serialize.
---    - Non-pending rows are no-ops (retry of an already-finalized report).
+--    - Claimed-first invariant: verified=TRUE (the only money path) REQUIRES
+--      status='processing', i.e. a granted claim_price_attempt lease. An
+--      unclaimed row can only ever be REJECTED (status write, never a reward),
+--      so cheap rejection paths (empty item, duplicate proof) stay quota-free
+--      without ever minting money.
+--    - Terminal states (verified/rejected/capped) are idempotent no-ops:
+--      webhook retries never double-reward.
 --    - Ledger transaction_id = the report id itself (deterministic: UUID in, UUID out).
---    - Wallet credit + status transition commit atomically.
+--    - Stuck 'processing' rows are reclaimable via claim_price_attempt's stale
+--      lease rule; every finalize exits 'processing' one way or another.
 -- -------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.finalize_price_verification(
   px_report_id UUID,
@@ -202,7 +259,10 @@ BEGIN
     RAISE EXCEPTION 'REPORT_NOT_FOUND: %', px_report_id;
   END IF;
 
-  IF v_row.ai_verification_status IS DISTINCT FROM 'pending' THEN
+  -- Terminal states: idempotent no-op, same result as the first finalize.
+  IF v_row.ai_verification_status = 'verified'
+     OR v_row.ai_verification_status = 'rejected'
+     OR v_row.ai_verification_status = 'capped' THEN
     RETURN jsonb_build_object('ok', true, 'idempotent', true, 'status', v_row.ai_verification_status);
   END IF;
 
@@ -213,6 +273,10 @@ BEGIN
   END IF;
 
   IF px_verified IS TRUE THEN
+    -- Money path: allowed ONLY from a claimed ('processing') row.
+    IF v_row.ai_verification_status IS DISTINCT FROM 'processing' THEN
+      RETURN jsonb_build_object('ok', false, 'reason', 'not-claimed', 'status', v_row.ai_verification_status);
+    END IF;
     BEGIN
       INSERT INTO reward_ledger (transaction_id, user_id, amount, xp_amount, reward_type, reference_id)
       VALUES (px_report_id, v_row.user_id, 0.5, 100, 'price_verification_success', px_report_id::TEXT);
@@ -221,7 +285,7 @@ BEGIN
       UPDATE price_reports
       SET ai_verification_status = 'verified',
           ai_confidence_score = COALESCE(px_confidence, ai_confidence_score)
-      WHERE id = px_report_id AND ai_verification_status = 'pending';
+      WHERE id = px_report_id AND ai_verification_status = 'processing';
       RETURN jsonb_build_object('ok', true, 'idempotent', true, 'status', 'verified');
     END;
 
@@ -240,6 +304,8 @@ BEGIN
 
     RETURN jsonb_build_object('ok', true, 'idempotent', false, 'status', 'verified');
   ELSE
+    -- Rejection path: allowed from pending (cheap pre-AI rejects) or processing.
+    -- Writes status only — never touches wallet.
     UPDATE price_reports
     SET ai_verification_status = 'rejected',
         ai_confidence_score = COALESCE(px_confidence, ai_confidence_score)

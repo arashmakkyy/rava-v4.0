@@ -105,6 +105,11 @@ function runSelfTest() {
   cases.push(['F3 null hash ignored -> pass', evaluateProofDupes([{ user_id: 'u1' }]).length === 0]);
   cases.push(['F4 null/empty flagged', evaluateItemNames([{ item_name: null }, { item_name: '  ' }, { item_name: 'x' }]).length === 2]);
   cases.push(['F5 missing both dates flagged', evaluateReportDates([{ id: 1 }, { report_date: '2026-01-01' }]).length === 1]);
+  // Pre-schema legacy rows (no report_date/proof_hash columns): evaluators must
+  // still work off created_at and skip hash checks, never crash.
+  const legacy = { user_id: 'u9', place_id: 'p9', item_name: 'x', created_at: '2026-03-01T10:00:00Z' };
+  cases.push(['legacy rows evaluate (created_at fallback)', evaluatePriceEntitlements([legacy, { ...legacy }]).length === 1]);
+  cases.push(['legacy rows: no hash => no dup', evaluateProofDupes([legacy, { ...legacy }]).length === 0]);
 
   let failed = 0;
   for (const [name, ok] of cases) {
@@ -155,13 +160,32 @@ async function runLive() {
     if (bad) fails += 1;
   };
 
+  // Schema-awareness: production may still be on an older migration, where new
+  // columns (report_date, proof_hash, google_place_id) simply don't exist yet.
+  // A missing column is NOT a failure — the migration creates it empty, so the
+  // corresponding constraint is trivially satisfiable. Probe first, then query
+  // only what exists. Auth/network errors still throw (never masked as clean).
+  async function hasColumns(table, cols) {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/${table}?select=${cols.join(',')}&limit=1`,
+      { headers }
+    );
+    if (res.ok) return true;
+    if (res.status === 400) return false;
+    throw new Error(`query failed: ${table} status=${res.status}`);
+  }
+
   const ledger = await fetchAll('reward_ledger', 'user_id,reward_type,reference_id');
   gate('F1 reward entitlement duplicates', evaluateRewardEntitlements(ledger));
 
-  const reports = await fetchAll(
-    'price_reports',
-    'user_id,place_id,item_name,report_date,created_at,proof_hash'
-  );
+  const priceCols = ['user_id', 'place_id', 'item_name', 'created_at'];
+  let priceNote = '';
+  if (await hasColumns('price_reports', ['report_date', 'proof_hash'])) {
+    priceCols.push('report_date', 'proof_hash');
+  } else {
+    priceNote = ' (report_date/proof_hash absent pre-migration: backfill + fresh-column paths, no legacy dupes possible)';
+  }
+  const reports = await fetchAll('price_reports', priceCols.join(','));
   gate('F2 price entitlement duplicates', evaluatePriceEntitlements(reports));
   gate('F3 proof-hash duplicates', evaluateProofDupes(reports));
   const badItems = evaluateItemNames(reports);
@@ -173,16 +197,23 @@ async function runLive() {
   if (badDates.length > 0) fails += 1;
 
   // Advisory only: registry coverage informs the identity decision, blocks nothing.
+  // google_place_id may itself be absent pre-migration: probe and degrade honestly.
   const ids = [...new Set(reports.map((r) => r.place_id).filter(Boolean))];
+  const googleCol = await hasColumns('attractions', ['google_place_id']);
   let matched = 0;
+  let checked = 0;
   for (const id of ids.slice(0, 500)) {
+    const orFilter = googleCol
+      ? `or=(place_id.eq.${encodeURIComponent(id)},google_place_id.eq.${encodeURIComponent(id)})`
+      : `place_id.eq.${encodeURIComponent(id)}`;
     const a = await fetch(
-      `${SUPABASE_URL}/rest/v1/attractions?select=place_id&or=(place_id.eq.${encodeURIComponent(id)},google_place_id.eq.${encodeURIComponent(id)})&limit=1`,
+      `${SUPABASE_URL}/rest/v1/attractions?select=place_id&${orFilter}&limit=1`,
       { headers }
     ).then((r) => r.json()).catch(() => []);
+    checked += 1;
     if (Array.isArray(a) && a.length > 0) matched += 1;
   }
-  console.log(`[INFO] place registry coverage: ${matched}/${ids.length} distinct ids resolve`);
+  console.log(`[INFO] place registry coverage: ${matched}/${ids.length} distinct ids resolve${priceNote}${googleCol ? '' : ' (google_place_id absent pre-migration)'}`);
 
   console.log(fails === 0 ? '\nPREFLIGHT: clean' : `\nPREFLIGHT: ${fails} BLOCKING group(s)`);
   process.exit(fails === 0 ? 0 : 1);

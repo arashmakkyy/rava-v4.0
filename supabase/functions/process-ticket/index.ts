@@ -32,98 +32,113 @@ serve(async (req) => {
     // (پالیسی آپلود همین ساختار را enforce می‌کند؛ این چک confused-deputy را می‌بندد.)
     if (!imagePath.startsWith(`${user.id}/`)) throw new Error("Forbidden: ticket ownership mismatch");
 
-    // Daily cost bound BEFORE any download/Gemini work.
-    const dayStart = new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z';
-    const { count: ticketsToday } = await supabase
-      .from('ticket_receipts')
-      .select('image_path', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .gte('created_at', dayStart);
-    if ((ticketsToday ?? 0) >= 20) {
-      return new Response(JSON.stringify({ error: 'daily ticket quota reached' }), {
-        status: 429,
+    // Atomic pre-AI claim (single gate for quota, duplicates, cooldown, retries).
+    // Parallel same-ticket requests collapse here: exactly ONE proceeds to AI.
+    const { data: claim, error: claimError } = await supabase.rpc('claim_ticket_attempt', {
+      px_user_id: user.id,
+      px_image_path: imagePath,
+    });
+    if (claimError) throw claimError;
+    if (!claim?.ok) {
+      if (claim?.reason === 'duplicate' && claim?.trip_id) {
+        const { data: existing } = await supabase
+          .from('trips')
+          .select()
+          .eq('id', claim.trip_id)
+          .maybeSingle();
+        if (existing) {
+          return new Response(JSON.stringify({ success: true, data: existing, duplicate: true }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        // Receipt points nowhere (trip deleted): fall through and reprocess
+        // under a fresh claim is impossible here (row exists) — treat as failed
+        // terminal for this path and let a future reclaim handle it.
+      }
+      const status = claim?.reason === 'capped' || claim?.reason === 'cooldown' ? 429 : 409;
+      return new Response(JSON.stringify({ error: claim?.reason || 'claim-refused' }), {
+        status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
+    const tripId = claim.trip_id as string;
 
-    // Duplicate policy: same ticket reprocessed returns the ORIGINAL trip —
-    // no new Gemini call, no new timeline row.
-    const { data: receipt } = await supabase
-      .from('ticket_receipts')
-      .select('trip_id')
-      .eq('user_id', user.id)
-      .eq('image_path', imagePath)
-      .maybeSingle();
-    if (receipt?.trip_id) {
-      const { data: existing } = await supabase
-        .from('trips')
-        .select()
-        .eq('id', receipt.trip_id)
-        .maybeSingle();
-      if (existing) {
-        return new Response(JSON.stringify({ success: true, data: existing, duplicate: true }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    // ۱. دانلود تصویر
+    // ۱. دانلود تصویر (failure -> bounded-retry bookkeeping, then 500).
     const { data: fileData, error: downloadError } = await supabase.storage
       .from('tickets')
       .download(imagePath);
 
-    if (downloadError) throw new Error("Image download failed");
+    if (downloadError || !fileData) {
+      await supabase.rpc('fail_ticket_attempt', { px_user_id: user.id, px_image_path: imagePath });
+      throw new Error("Image download failed");
+    }
 
     const base64Image = btoa(new Uint8Array(await fileData.arrayBuffer())
       .reduce((data, byte) => data + String.fromCharCode(byte), ''));
 
-    // ۲. پردازش با Gemini 3 Flash
+    // ۲. پردازش با Gemini (failure -> bounded-retry bookkeeping, then 500).
     const ai = new GoogleGenAI({ apiKey: Deno.env.get('GEMINI_API_KEY')! });
-    const response = await ai.models.generateContent({
-      model: AI_MODELS.TICKET_OCR,
-      contents: {
-        parts: [
-          { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
-          { text: "Analyze this travel document. Extract details: type (flight/hotel/activity), title, time (HH:MM), date (YYYY-MM-DD), and address. Return JSON." }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            type: { type: Type.STRING, enum: ['flight', 'hotel', 'activity', 'food'] },
-            title: { type: Type.STRING },
-            time: { type: Type.STRING },
-            date: { type: Type.STRING },
-            address: { type: Type.STRING }
-          },
-          required: ["type", "title", "date"]
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: AI_MODELS.TICKET_OCR,
+        contents: {
+          parts: [
+            { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+            { text: "Analyze this travel document. Extract details: type (flight/hotel/activity), title, time (HH:MM), date (YYYY-MM-DD), and address. Return JSON." }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              type: { type: Type.STRING, enum: ['flight', 'hotel', 'activity', 'food'] },
+              title: { type: Type.STRING },
+              time: { type: Type.STRING },
+              date: { type: Type.STRING },
+              address: { type: Type.STRING }
+            },
+            required: ["type", "title", "date"]
+          }
         }
-      }
-    });
+      });
+
+    } catch (aiErr) {
+      await supabase.rpc('fail_ticket_attempt', { px_user_id: user.id, px_image_path: imagePath });
+      throw aiErr;
+    }
 
     const ticketData = JSON.parse(response.text || "{}");
 
-    // ۳. ثبت در دیتابیس برای کاربر تایید شده
-    const { data: trip, error: insertError } = await supabase
+    // ۳. ثبت در دیتابیس با trip id قطعی claim (insert idempotent: retryها ردیف تکراری نمی‌سازند).
+    const { error: insertError } = await supabase
       .from('trips')
-      .insert({
+      .upsert({
+        id: tripId,
         user_id: user.id,
         type: ticketData.type,
         title: ticketData.title,
         start_time: `${ticketData.date}T${ticketData.time || '00:00'}:00`,
         details: { address: ticketData.address },
         status: 'upcoming'
-      })
-      .select().single();
+      }, { onConflict: 'id', ignoreDuplicates: true });
+    if (insertError) {
+      await supabase.rpc('fail_ticket_attempt', { px_user_id: user.id, px_image_path: imagePath });
+      throw insertError;
+    }
 
-    if (insertError) throw insertError;
+    const { data: trip } = await supabase
+      .from('trips')
+      .select()
+      .eq('id', tripId)
+      .single();
 
-    // Receipt for duplicate suppression (best-effort: never fails the response).
-    await supabase
-      .from('ticket_receipts')
-      .upsert({ user_id: user.id, image_path: imagePath, trip_id: trip.id }, { onConflict: 'user_id,image_path' });
+    await supabase.rpc('complete_ticket_attempt', {
+      px_user_id: user.id,
+      px_image_path: imagePath,
+      px_trip_id: tripId,
+    });
 
     return new Response(JSON.stringify({ success: true, data: trip }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

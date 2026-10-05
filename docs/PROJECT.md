@@ -185,7 +185,7 @@ The application is **Persian-first** and **RTL-only** for user-facing UI. This i
 | Privacy | Do not log full transcripts or locations into third-party analytics without product approval; keep secrets in env. |
 | Performance | Cache curated places (24h client TTL); Places essentials/full details ~30-day IndexedDB TTL; photos on demand; avoid unnecessary map remounts. |
 | Dependency management | Keep `package.json` and `index.html` importmap pins synchronized for shared CDN/npm packages used by this project. |
-| Testing | No automated test runner is configured in `package.json` today; validate via `npm run build` and manual browser smoke on map/auth/voice paths. |
+| Testing | Gates: `npm run typecheck` (400+ app files), `npm run typecheck:edge` (Deno, all 5 functions), `npm run build`, `npx playwright test` (boot green; auth/outbox suites need `E2E_EMAIL`/`E2E_PASSWORD`), `npm run abuse` + `npm run smoke` + `scripts/preflight.mjs` (need live Supabase credentials, run post-apply pre-staging). |
 | Build validation | `npm run build` must succeed after dependency or type changes. |
 | Browser/runtime | Target modern mobile browsers with geolocation, mic, camera; respect offline indicator and outbox replay. |
 | Backward compatibility | Preserve Place ID keys, wallet semantics, and auth session storage keys unless a versioned migration is planned. |

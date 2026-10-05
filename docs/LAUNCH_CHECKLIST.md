@@ -38,8 +38,8 @@ supabase/migrations/20240806000014_footprint_visibility.sql (P0.5: own-pending r
   visible; DROP+CREATE required — return shape grew)
 supabase/migrations/20240806000015_price_report_identity.sql (P0.5: subject identity
   resolution, places_cache FK removed)
-supabase/migrations/20240806000016_live_leases.sql          (P0.4b: proportional fuel
-  leases — acquire (lock+debit+quota) + idempotent close/reconcile)
+supabase/migrations/20240806000016_live_leases.sql          (P0.4b: prepaid proportional
+  fuel leases — service-only acquire/refund; NO client refund path)
 ```
 
 Pre-apply gate (read-only, must exit 0; exact GROUP BY SQL is in the script header):
@@ -68,7 +68,7 @@ SUPABASE_ACCESS_TOKEN=… node scripts/apply_migrations.mjs
 Confirm Edge Functions still use the **service role** key only on the server (`process-ticket`, `verify-price`, `the-dreamer`, `mint-live-token`, `ai-complete`). Frontend keeps the **anon** key only — no Gemini credential is bundled anymore (Live uses ephemeral tokens, other AI calls use the `ai-complete` proxy).
 
 New/changed Edge Functions to deploy from repo (status: **implemented**, NOT yet deployed):
-- `mint-live-token` (proportional fuel leases: balance gate + per-day quota + TTL = granted minutes; needs `GEMINI_API_KEY`, `SUPABASE_URL` + `SUPABASE_ANON_KEY`; user-JWT caller, gateway JWT check stays ON; client reconciles via `close_live_lease`)
+- `mint-live-token` (prepaid proportional leases: server-side balance gate + per-day quota + TTL = granted minutes; needs `GEMINI_API_KEY`, `SUPABASE_URL` + `SUPABASE_ANON_KEY`; user-JWT caller, gateway JWT check stays ON; NO client refund path — mint-failure refunds only via service-role `refund_live_lease`)
 - `ai-complete` (same secrets as above; user-JWT caller)
 - `verify-price` (internal webhook processor: `supabase/config.toml` sets `verify_jwt = false`; needs NEW secret `VERIFY_PRICE_WEBHOOK_SECRET`, mirrored as `x-webhook-secret` header on the Database Webhook for `price_reports` INSERT; handler re-reads the row and enforces ownership/status)
 - `the-dreamer` (internal scheduled job: `verify_jwt = false`; needs NEW secret `THE_DREAMER_JOB_SECRET` sent as `x-job-secret` by the scheduler; ordinary user JWTs are rejected with 403)

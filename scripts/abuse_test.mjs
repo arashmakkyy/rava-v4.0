@@ -327,6 +327,82 @@ async function main() {
       record('A15: user JWT cannot trigger the-dreamer', !!blocked, `status=${res.status}`);
     }
 
+    // A19: full price flow — create -> claim -> processing -> finalize verified
+    // rewards exactly once; re-finalize is a no-op (P0.3 state machine).
+    {
+      const { json: cacheRows } = await rest('/rest/v1/places_cache?select=place_id&limit=1', { token: SERVICE });
+      const cacheId = Array.isArray(cacheRows) ? cacheRows[0]?.place_id : null;
+      const { json: created } = await rest('/rest/v1/price_reports', {
+        method: 'POST', token: A.token, prefer: 'return=representation',
+        body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: `flow ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow.jpg`, ai_verification_status: 'pending' },
+      });
+      const reportId = Array.isArray(created) ? created[0]?.id : created?.id;
+      if (!reportId) {
+        record('A19: price claim->finalize flow', false, 'could not seed price report');
+      } else {
+        const claim = await rest('/rest/v1/rpc/claim_price_attempt', {
+          method: 'POST', token: SERVICE, body: { px_report_id: reportId },
+        });
+        const claimed = claim.json?.ok === true;
+        const before = await profileOf(A.token);
+        const fin1 = await rest('/rest/v1/rpc/finalize_price_verification', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
+        });
+        const mid = await profileOf(A.token);
+        const fin2 = await rest('/rest/v1/rpc/finalize_price_verification', {
+          method: 'POST', token: SERVICE,
+          body: { px_report_id: reportId, px_verified: true, px_confidence: 1 },
+        });
+        const after = await profileOf(A.token);
+        const creditedOnce = Number(mid?.wallet_balance || 0) > Number(before?.wallet_balance || 0)
+          && Number(after?.wallet_balance || 0) === Number(mid?.wallet_balance || 0);
+        const secondNoop = fin2.json?.idempotent === true;
+        // Rejected path on a second report must credit nothing.
+        const { json: created2 } = await rest('/rest/v1/price_reports', {
+          method: 'POST', token: A.token, prefer: 'return=representation',
+          body: { user_id: A.id, place_id: cacheId || 'abuse', item_name: `flow2 ${stamp}`, reported_price: 2, currency: 'TRY', proof_image_url: `${A.id}/flow2.jpg`, ai_verification_status: 'pending' },
+        });
+        const reportId2 = Array.isArray(created2) ? created2[0]?.id : created2?.id;
+        let rejectedClean = false;
+        if (reportId2) {
+          await rest('/rest/v1/rpc/claim_price_attempt', { method: 'POST', token: SERVICE, body: { px_report_id: reportId2 } });
+          const b2 = await profileOf(A.token);
+          await rest('/rest/v1/rpc/finalize_price_verification', {
+            method: 'POST', token: SERVICE,
+            body: { px_report_id: reportId2, px_verified: false, px_confidence: 0.2 },
+          });
+          const a2 = await profileOf(A.token);
+          rejectedClean = Number(a2?.wallet_balance || 0) === Number(b2?.wallet_balance || 0);
+        }
+        record(
+          'A19: price claim->finalize flow (reward once, re-finalize noop, reject clean)',
+          !!claimed && fin1.json?.status === 'verified' && !!creditedOnce && !!secondNoop && !!rejectedClean,
+          `claim=${JSON.stringify(claim.json)} fin1=${JSON.stringify(fin1.json)} fin2=${JSON.stringify(fin2.json)}`
+        );
+      }
+    }
+
+    // A20: 5 parallel ticket claims, same (user, path) -> exactly one wins AI.
+    {
+      const path = `${A.id}/race-${stamp}.jpg`;
+      const call = () => rest('/rest/v1/rpc/claim_ticket_attempt', {
+        method: 'POST', token: SERVICE,
+        body: { px_user_id: A.id, px_image_path: path },
+      });
+      const results = await Promise.all([call(), call(), call(), call(), call()]);
+      const winners = results.filter((r) => r.json?.ok === true);
+      const losersOk = results.filter((r) => !r.json?.ok).every((r) =>
+        ['in-progress', 'duplicate'].includes(r.json?.reason)
+      );
+      const tripIds = new Set(winners.map((r) => r.json?.trip_id).filter(Boolean));
+      record(
+        'A20: parallel ticket claims -> single winner, same trip id',
+        winners.length === 1 && losersOk && tripIds.size <= 1,
+        `winners=${winners.length} reasons=${results.map((r) => r.json?.reason || 'ok').join(',')}`
+      );
+    }
+
     // A16: profile id/wallet/xp cannot be PATCHed directly (allowlist).
     {
       const { res } = await rest(`/rest/v1/profiles?id=eq.${A.id}`, {
@@ -352,7 +428,7 @@ async function main() {
       } else {
         const call = () => rest('/rest/v1/rpc/claim_price_attempt', {
           method: 'POST', token: SERVICE,
-          body: { px_report_id: reportId, px_max_attempts_per_day: 10 },
+          body: { px_report_id: reportId },
         });
         const [r1, r2] = await Promise.all([call(), call()]);
         const oks = [r1.json?.ok === true, r2.json?.ok === true].filter(Boolean).length;
