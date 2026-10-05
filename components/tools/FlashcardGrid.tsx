@@ -18,7 +18,7 @@ export const FlashcardGrid: React.FC = () => {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between px-2">
-        <span className="text-rava-xs font-black uppercase tracking-widest text-white/20">Tap to show driver/local</span>
+        <span className="text-rava-xs font-black tracking-widest text-white/20">برای نمایش به راننده بزن</span>
         <h4 className="flex items-center gap-2 text-rava-lg font-black text-white">
           جملات ضروری <Zap size={16} className="text-rava-gold" />
         </h4>

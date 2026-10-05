@@ -13,7 +13,7 @@ export const Tools: React.FC = () => {
 
   return (
     <div className="page-pad h-full overflow-y-auto pt-6 no-scrollbar scroll-smooth">
-      <PageHeader title="ابزارهای بقا" subtitle="Traveler's Survival Toolkit" />
+      <PageHeader title="ابزارهای بقا" subtitle="جعبه‌ابزار سفر" />
 
       <div className="space-y-6">
         <BargainCalculator />
@@ -30,7 +30,7 @@ export const Tools: React.FC = () => {
             </div>
             <div className="text-right">
               <h4 className="text-rava-base font-black text-rava-danger">پشتیبانی فوری راوا</h4>
-              <span className="text-rava-xs font-bold text-rava-danger/50 ltr-island">24/7 Priority Line</span>
+              <span className="text-rava-xs font-bold text-rava-danger/50">خط ویژه ۲۴/۷</span>
             </div>
           </div>
           <p className="mb-4 text-right text-rava-sm leading-relaxed text-white/60">

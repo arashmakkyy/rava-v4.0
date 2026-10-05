@@ -101,6 +101,12 @@
   unicode-bidi: isolate;
   text-align: left;
 }
+/* Logical frame corners (native CSS: Tailwind v4 does not emit logical
+   border-radius for custom tokens — verified against built CSS). */
+.corner-ts { border-start-start-radius: var(--radius-lg); }
+.corner-te { border-start-end-radius: var(--radius-lg); }
+.corner-bs { border-end-start-radius: var(--radius-lg); }
+.corner-be { border-end-end-radius: var(--radius-lg); }
 .page-pad {
   padding-left: var(--page-padding-x);
   padding-right: var(--page-padding-x);

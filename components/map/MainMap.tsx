@@ -47,8 +47,8 @@ const CuratedMarker = React.memo(({ poi, onClick, isActive }: {
              <Star size={18} className="fill-current text-black" />
           </div>
         </div>
-        <div className="pointer-events-none absolute -bottom-8 start-1/2 z-[1000] -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1 opacity-0 transition-opacity group-hover:opacity-100 glass text-black">
-           <span className="text-rava-xs font-black">{poi.name}</span>
+        <div className="pointer-events-none absolute -bottom-8 start-1/2 z-[1000] hidden -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1 glass text-white [@media(hover:hover)]:group-hover:block">
+          <span className="text-rava-xs font-black">{poi.name}</span>
         </div>
       </div>
     </AdvancedMarker>

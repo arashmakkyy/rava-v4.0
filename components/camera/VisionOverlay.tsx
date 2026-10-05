@@ -65,10 +65,10 @@ export const VisionOverlay: React.FC = () => {
               transition={{ duration: 2, repeat: Infinity }}
               className="relative h-72 w-72 rounded-rava-modal border-2 border-rava-gold/30"
             >
-              <div className="absolute -ms-1 -mt-1 start-0 top-0 h-12 w-12 rounded-tl-rava-lg border-s-4 border-t-4 border-rava-gold" />
-              <div className="absolute -me-1 -mt-1 end-0 top-0 h-12 w-12 rounded-tr-rava-lg border-e-4 border-t-4 border-rava-gold" />
-              <div className="absolute -mb-1 -ms-1 bottom-0 start-0 h-12 w-12 rounded-bl-rava-lg border-b-4 border-s-4 border-rava-gold" />
-              <div className="absolute -mb-1 -me-1 bottom-0 end-0 h-12 w-12 rounded-br-rava-lg border-b-4 border-e-4 border-rava-gold" />
+              <div className="absolute -ms-1 -mt-1 start-0 top-0 h-12 w-12 corner-ts border-s-4 border-t-4 border-rava-gold" />
+              <div className="absolute -me-1 -mt-1 end-0 top-0 h-12 w-12 corner-te border-e-4 border-t-4 border-rava-gold" />
+              <div className="absolute -mb-1 -ms-1 bottom-0 start-0 h-12 w-12 corner-bs border-b-4 border-s-4 border-rava-gold" />
+              <div className="absolute -mb-1 -me-1 bottom-0 end-0 h-12 w-12 corner-be border-b-4 border-e-4 border-rava-gold" />
 
               <motion.div
                 animate={{ top: ['0%', '100%', '0%'] }}

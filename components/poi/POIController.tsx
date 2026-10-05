@@ -15,9 +15,9 @@ import { isWithinRadius } from '../../utils/geoUtils';
 import { GeoPoint } from '../../utils/geoPoint';
 import { formatJalaliShort } from '../../utils/jalali';
 import { 
-  X, Sparkles, MapPin, Tag, 
+  X, Sparkles, MapPin, Tag, Star,
   Loader2, AudioWaveform as Waveform,
-  Clock, Zap, Play, Square, BookOpen,
+  Play, Square, BookOpen,
   Heart, Navigation, CalendarPlus, AlertCircle, RefreshCw
 } from 'lucide-react';
 
@@ -286,7 +286,7 @@ export const POIController: React.FC = () => {
                 <div className="flex-1 pe-4">
                   <motion.h3 layoutId={`title-${activePOI.id}`} className="text-white font-black text-xl mb-0.5 truncate">{activePOI.name}</motion.h3>
                   <div className="flex items-center justify-end gap-1 text-white/40 text-[11px] font-bold">
-                    <span>{activePOI.description || 'Ready for Discovery'}</span>
+                    <span>{activePOI.description || 'آماده کشف'}</span>
                     <MapPin size={11} className="text-rava-gold" />
                   </div>
                 </div>
@@ -350,7 +350,7 @@ export const POIController: React.FC = () => {
               layoutId={`card-${fullDetailPOI.id}`}
               initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 40, stiffness: 300 }}
-              className="relative h-[92vh] w-full overflow-y-auto rounded-t-rava-modal border-t border-white/10 bg-rava-bg pb-safe no-scrollbar shadow-[0_-40px_80px_rgba(0,0,0,0.9)]"
+              className="relative h-[92dvh] w-full overflow-y-auto rounded-t-rava-modal border-t border-white/10 bg-rava-bg pb-safe no-scrollbar shadow-[0_-40px_80px_rgba(0,0,0,0.9)]"
             >
               <POIHeader 
                 id={fullDetailPOI.id}
@@ -361,7 +361,7 @@ export const POIController: React.FC = () => {
                 onBack={() => setFullDetailPOI(null)}
               />
 
-              <div className="px-6 pt-6 pb-36 space-y-6">
+              <div className="px-4 pt-6 pb-36 space-y-6 min-[380px]:px-6">
                 {/* Primary CTAs */}
                 <div className="flex gap-2">
                   <button
@@ -420,7 +420,7 @@ export const POIController: React.FC = () => {
                           <BookOpen size={24} />
                        </div>
                        <h4 className="text-rava-lg font-black text-white">داستان اینجا رو بشنو</h4>
-                       <p className="text-rava-xs font-black uppercase tracking-widest text-rava-gold/60">Special Curated Narrative</p>
+                        <p className="text-rava-xs font-black tracking-widest text-rava-gold/60">روایت راوا</p>
                     </div>
 
                     <button 
@@ -446,24 +446,22 @@ export const POIController: React.FC = () => {
                       <Tag size={24} />
                     </div>
                     <span className="text-rava-sm font-black text-white">گزارش قیمت</span>
-                    <span className="text-rava-xs font-bold uppercase tracking-tighter text-blue-400">30 Min Bonus</span>
+                    <span className="text-rava-xs font-bold tracking-tighter text-blue-400">پاداش ۳۰ دقیقه‌ای</span>
                   </button>
                 </div>
 
                 <div className="glass flex items-center justify-around rounded-rava-xl border-white/5 bg-white/[0.01] p-6">
                   <div className="flex flex-col items-center gap-1">
                     <span className="text-rava-lg font-black text-white">{fullDetailPOI.footprints?.length || 0}</span>
-                    <span className="text-rava-xs font-black uppercase tracking-[0.2em] text-white/40">Steps</span>
+                    <span className="text-rava-xs font-black tracking-[0.2em] text-white/40">ردپاها</span>
                   </div>
                   <div className="h-10 w-px bg-white/10" />
                   <div className="flex flex-col items-center gap-1">
-                    <Clock size={20} className="text-green-500/80" />
-                    <span className="text-rava-xs font-black uppercase tracking-[0.2em] text-white/40">Open Now</span>
-                  </div>
-                  <div className="h-10 w-px bg-white/10" />
-                  <div className="flex flex-col items-center gap-1">
-                    <Zap size={20} className="text-blue-500/80" />
-                    <span className="text-rava-xs font-black uppercase tracking-[0.2em] text-white/40">Trending</span>
+                    <span className="flex items-center gap-1 text-rava-lg font-black text-white">
+                      {typeof fullDetailPOI.rating === 'number' ? fullDetailPOI.rating.toFixed(1).replace('.', '٫') : '—'}
+                      <Star size={16} className="fill-rava-gold text-rava-gold" />
+                    </span>
+                    <span className="text-rava-xs font-black tracking-[0.2em] text-white/40">امتیاز</span>
                   </div>
                 </div>
 

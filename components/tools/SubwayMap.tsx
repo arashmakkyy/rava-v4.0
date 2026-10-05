@@ -65,7 +65,6 @@ export const SubwayMap: React.FC = () => {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between px-2">
-        <span className="text-rava-xs font-black uppercase tracking-widest text-white/20">High-Res Offline Data</span>
         <h4 className="flex items-center gap-2 text-rava-lg font-black text-white">
           نقشه مترو <MapIcon size={16} className="text-indigo-500" />
         </h4>

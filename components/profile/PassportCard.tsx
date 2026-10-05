@@ -84,7 +84,7 @@ export const PassportCard: React.FC = () => {
             <Sparkles size={14} className="text-rava-gold" />
             <div className="flex items-center gap-2">
               <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
-              <span className="text-rava-xs font-black uppercase tracking-widest text-white">Tap to open · راوا</span>
+              <span className="text-rava-xs font-black tracking-widest text-white">برای باز کردن بزن · راوا</span>
             </div>
           </div>
         </div>

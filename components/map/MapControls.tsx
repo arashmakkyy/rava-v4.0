@@ -58,7 +58,7 @@ export const MapControls: React.FC = () => {
       <button type="button" onClick={handleToggle} aria-label="نمایش مکان‌های راوا" className={`${controlClass} group ${showCurated ? 'border-yellow-400 bg-rava-gold text-black shadow-[0_0_30px_rgba(234,179,8,0.4)]' : 'border-white/10 bg-black/40 text-white/40 backdrop-blur-xl hover:border-white/20 hover:text-white'}`}>
         <Sparkles size={20} className={showCurated ? 'animate-pulse' : ''} />
         <span className="mt-1 text-rava-xs font-black tracking-tight">جواهر</span>
-        <div className="pointer-events-none absolute end-full me-4 rounded-rava-md glass px-3 py-1.5 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap">
+        <div className="pointer-events-none absolute end-full me-4 hidden rounded-rava-md glass px-3 py-1.5 whitespace-nowrap [@media(hover:hover)]:group-hover:block">
           <span className="text-rava-xs font-bold text-white">نمایش لایه راوا</span>
         </div>
       </button>
