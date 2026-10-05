@@ -1,7 +1,5 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import { APP_CONFIG } from '../config';
+import { aiProxyService } from './ai/aiProxyService';
 import { supabase } from './supabaseClient';
-import { RECAP_PROMPT, buildRecapUserMessage } from '../prompts/recap';
 import { extractJSON } from '../utils/jsonParser';
 import { RecapFacts, RecapResult, Stamp, TripEvent } from '../types';
 import { getTodaysEvents, isActivityDone, isActivityOpen, todayIso } from '../utils/tripMapper';
@@ -73,36 +71,14 @@ function buildFactsOnlySummary(facts: RecapFacts): RecapResult {
 }
 
 async function summarizeWithModel(facts: RecapFacts): Promise<RecapResult | null> {
-  const key = APP_CONFIG.GOOGLE.GEMINI_API_KEY;
-  if (!key) return null;
-
   try {
-    const ai = new GoogleGenAI({ apiKey: key });
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: buildRecapUserMessage(JSON.stringify(facts)),
-      config: {
-        systemInstruction: RECAP_PROMPT,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: { type: Type.STRING },
-            highlights: { type: Type.ARRAY, items: { type: Type.STRING } },
-            tomorrow_hint: { type: Type.STRING },
-            passport_item: { type: Type.STRING },
-          },
-          required: ['summary', 'highlights', 'tomorrow_hint', 'passport_item'],
-        },
-      },
-    });
-
+    const text = await aiProxyService.recapSummary(facts);
     const parsed = extractJSON<{
       summary: string;
       highlights: string[];
       tomorrow_hint: string;
       passport_item: string;
-    }>(response.text || '{}');
+    }>(text || '{}');
 
     if (!parsed?.summary) return null;
 

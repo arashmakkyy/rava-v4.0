@@ -29,6 +29,7 @@ export const useUIStore = create<ExtendedUIState>((set) => ({
   captions: { user: '', ai: '' },
   rewardNotify: null,
   pendingToolConfirm: null,
+  voiceError: null,
 
   setActiveTab: (tab: AppTab) => set({ activeTab: tab }),
   setRecording: (val: boolean) => set({ isRecording: val }),
@@ -44,4 +45,5 @@ export const useUIStore = create<ExtendedUIState>((set) => ({
   setCaptions: (captions) => set({ captions }),
   setRewardNotify: (val) => set({ rewardNotify: val }),
   setPendingToolConfirm: (val: PendingToolConfirm | null) => set({ pendingToolConfirm: val }),
+  setVoiceError: (msg: string | null) => set({ voiceError: msg }),
 }));

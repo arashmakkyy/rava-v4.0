@@ -19,7 +19,9 @@ export const APP_CONFIG = {
   },
   GOOGLE: {
     // Dedicated Vite env vars only — no embedded API key fallbacks.
+    // NOTE: Gemini is NEVER bundled in the client. Live voice uses short-lived
+    // ephemeral tokens (mint-live-token Edge Function); other AI calls go through
+    // the authenticated ai-complete proxy. Do NOT add a client Gemini key here.
     MAPS_API_KEY: getEnv('VITE_GOOGLE_MAPS_API_KEY', ''),
-    GEMINI_API_KEY: getEnv('VITE_GEMINI_API_KEY', '')
   }
 };

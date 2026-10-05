@@ -340,6 +340,8 @@ export interface UIState {
   rewardNotify: { show: boolean; amount: string } | null;
   isPlayingNarrative: boolean;
   pendingToolConfirm: PendingToolConfirm | null;
+  /** Visible voice-session error (mint failure, quota, reconnect exhaustion). */
+  voiceError: string | null;
   
   setActiveTab: (tab: AppTab) => void;
   setRecording: (val: boolean) => void;
@@ -352,6 +354,7 @@ export interface UIState {
   setRewardNotify: (val: { show: boolean; amount: string } | null) => void;
   setPlayingNarrative: (val: boolean) => void;
   setPendingToolConfirm: (val: PendingToolConfirm | null) => void;
+  setVoiceError: (msg: string | null) => void;
 }
 
 export interface MapState {

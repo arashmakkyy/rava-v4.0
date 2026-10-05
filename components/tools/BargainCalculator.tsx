@@ -4,11 +4,10 @@ import { DollarSign, Tag, AlertCircle, CheckCircle2, Sparkles } from 'lucide-rea
 import { GlassCard } from '../core/GlassCard';
 import { useUserStore } from '../../store/useUserStore';
 import { useSurvivalStore } from '../../store/useSurvivalStore';
-import { GoogleGenAI, Type } from '@google/genai';
+import { aiProxyService } from '../../services/ai/aiProxyService';
 import { extractJSON } from '../../utils/jsonParser';
 import { formatAsToman } from '../../utils/helpers';
 import { AudioGraph } from '../../services/audioGraph';
-import { APP_CONFIG } from '../../config';
 import { Button, Input } from '../ui';
 
 const motion = _motion as any;
@@ -36,35 +35,18 @@ export const BargainCalculator: React.FC = () => {
     setVerdict(null);
     AudioGraph.getInstance().playTickSound();
 
-    const ai = new GoogleGenAI({ apiKey: APP_CONFIG.GOOGLE.GEMINI_API_KEY });
     const userVibe = semanticProfile.travel_style || 'normal';
 
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `به عنوان "راوا" (دستیار توریست ایرانی)، این قیمت رو کارشناسی کن:
-        آیتم: ${item}
-        قیمت اعلامی فروشنده: ${price} ${currencyLabel}
-        شهر: ${cityMode}
-        سبک سفر کاربر: ${userVibe}
-        
-        بگو آیا می‌ارزه؟ قیمت منصفانه (fair_price) چنده؟ 
-        لحن: صمیمی و محافظ جیب مسافر.`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              status: { type: Type.STRING, enum: ['good', 'bad', 'neutral'] },
-              fair_price: { type: Type.NUMBER },
-              message: { type: Type.STRING },
-            },
-            required: ['status', 'fair_price', 'message'],
-          },
-        },
+      const text = await aiProxyService.bargainVerdict({
+        item,
+        price,
+        currency: currencyLabel,
+        city: cityMode || '',
+        vibe: userVibe,
       });
 
-      const data = extractJSON<Verdict>(response.text || '{}');
+      const data = extractJSON<Verdict>(text || '{}');
       setVerdict(data);
       if (data.status === 'bad') AudioGraph.haptic([100, 50, 100]);
       else AudioGraph.getInstance().playCoinSound();

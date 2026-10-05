@@ -1,6 +1,6 @@
 ﻿import React from 'react';
 import { motion as _motion, AnimatePresence } from 'framer-motion';
-import { MessageSquare, Zap } from 'lucide-react';
+import { MessageSquare, Zap, X } from 'lucide-react';
 import { useUIStore } from '../../../store/useUIStore';
 import { useGeminiLive } from '../../../hooks/useGeminiLive';
 import { AudioVisualizer } from '../AudioVisualizer';
@@ -17,6 +17,8 @@ export const MagicButton: React.FC = () => {
   const showTranscript = useUIStore((s) => s.showTranscript);
   const captions = useUIStore((s) => s.captions);
   const setShowTranscript = useUIStore((s) => s.setShowTranscript);
+  const voiceError = useUIStore((s) => s.voiceError);
+  const setVoiceError = useUIStore((s) => s.setVoiceError);
 
   const { connect, disconnect, interrupt } = useGeminiLive();
 
@@ -69,6 +71,27 @@ export const MagicButton: React.FC = () => {
             <span className="text-rava-xs font-black tracking-wide text-rava-gold">
               {isSpeaking ? 'راوا در حال پاسخ است' : isThinking ? 'در حال فکر کردن' : 'در حال گوش دادن'}
             </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {voiceError && !isRecording && !isSpeaking && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="glass pointer-events-auto flex max-w-[80%] items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-center shadow-glass"
+          >
+            <span className="flex-1 text-rava-xs font-bold leading-relaxed text-red-200">{voiceError}</span>
+            <button
+              type="button"
+              aria-label="بستن خطا"
+              onClick={() => setVoiceError(null)}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-300/70 transition-colors hover:text-red-200"
+            >
+              <X size={14} />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>

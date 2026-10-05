@@ -1,6 +1,6 @@
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { APP_CONFIG } from '../../config';
 import { SYSTEM_INSTRUCTION, buildSessionContext, logContextVolume } from '../../prompts';
+import { supabase } from '../supabaseClient';
 import { useUserStore } from '../../store/useUserStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -27,6 +27,7 @@ class SessionManager {
   private disconnecting = false;
   private lastFuelReportTime = 0;
   private connectGeneration = 0;
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   getStatus(): SessionStatus {
     return this.status;
@@ -36,11 +37,62 @@ class SessionManager {
     return this.status === 'connected';
   }
 
+  private failConnect(message: string): void {
+    useUIStore.getState().setVoiceError(message);
+    conversationState.setConnecting(false);
+    conversationState.setIdle();
+    this.status = 'idle';
+    this.session = null;
+    this.sessionPromise = null;
+  }
+
+  /**
+   * Mint a short-lived Live token from our backend. Every connect — including
+   * recovery reconnects — mints a FRESH token (uses:1), so resumption can never
+   * bypass the per-day mint quota or outlive the token expiry enforced by Google.
+   * No long-lived Gemini credential exists in this bundle.
+   */
+  private async mintLiveToken(): Promise<{ token: string; apiVersion: string; expiresAt: string }> {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('NO_SESSION');
+
+    const { data, error } = await supabase.functions.invoke('mint-live-token');
+    if (error) {
+      const status = (error as { status?: number })?.status;
+      if (status === 429) throw new Error('QUOTA');
+      throw error;
+    }
+    const token = (data as { token?: string })?.token;
+    const apiVersion = (data as { apiVersion?: string })?.apiVersion || 'v1beta';
+    const expiresAt = (data as { expiresAt?: string })?.expiresAt;
+    if (!token || !expiresAt) throw new Error('BAD_TOKEN');
+    return { token, apiVersion, expiresAt };
+  }
+
+  private armExpiryTimer(expiresAt: string, generation: number) {
+    this.clearExpiryTimer();
+    // Disconnect 15s before Google starts rejecting traffic: hard server-side cap.
+    const ms = new Date(expiresAt).getTime() - Date.now() - 15_000;
+    if (ms <= 0) return;
+    this.expiryTimer = setTimeout(() => {
+      if (generation !== this.connectGeneration || !this.isConnected()) return;
+      useUIStore.getState().setVoiceError('زمان سشن صوتی تموم شد. برای ادامه دوباره وصل شو.');
+      this.disconnect();
+    }, ms);
+  }
+
+  private clearExpiryTimer() {
+    if (this.expiryTimer) {
+      clearTimeout(this.expiryTimer);
+      this.expiryTimer = null;
+    }
+  }
+
   async connect(options?: { fromRecovery?: boolean }): Promise<void> {
     const { wallet } = useUserStore.getState();
     if (wallet.balance <= 0) {
+      useUIStore.getState().setVoiceError('سوخت راوا تموم شده. از پروفایل اعتبار دمو بگیر.');
       useUIStore.getState().setActiveTab('profile');
-      alert('سوخت راوا تموم شده. از پروفایل می‌تونی شارژ کنی.');
       return;
     }
 
@@ -54,16 +106,27 @@ class SessionManager {
       return;
     }
 
-    const apiKey = (typeof process !== 'undefined' && (process as any).env?.API_KEY)
-      || APP_CONFIG.GOOGLE.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error('[SessionManager] Missing Gemini API key');
+    // Ephemeral credential: minted per connect from our backend (never bundled).
+    let liveToken: { token: string; apiVersion: string; expiresAt: string };
+    try {
+      liveToken = await this.mintLiveToken();
+    } catch (err) {
+      const code = (err as Error)?.message;
+      if (code === 'NO_SESSION') {
+        this.failConnect('برای گفتگو اول وارد حساب شو.');
+      } else if (code === 'QUOTA') {
+        this.failConnect('سهم امروز گفتگو تموم شده. فردا دوباره بیا.');
+      } else {
+        console.error('[SessionManager] Token mint failed:', err);
+        this.failConnect('توکن گفتگو صادر نشد. اتصال اینترنت رو چک کن و دوباره بزن.');
+      }
       return;
     }
 
     this.intentionalClose = false;
     this.disconnecting = false;
     this.status = options?.fromRecovery ? 'reconnecting' : 'connecting';
+    useUIStore.getState().setVoiceError(null);
     conversationState.setConnecting(true);
 
     const generation = ++this.connectGeneration;
@@ -72,7 +135,12 @@ class SessionManager {
 
     audioOutputQueue.stopStaticNarrative();
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey: liveToken.token,
+      httpOptions: { apiVersion: liveToken.apiVersion },
+    });
+    // Hard cap: disconnect shortly before Google starts rejecting traffic.
+    this.armExpiryTimer(liveToken.expiresAt, generation);
 
     try {
       await audioOutputQueue.init();
@@ -121,6 +189,7 @@ class SessionManager {
             this.status = 'connected';
             this.lastFuelReportTime = Date.now();
             connectionRecovery.markSuccess();
+            useUIStore.getState().setVoiceError(null);
             conversationState.setListening();
 
             audioInputStream.start(
@@ -162,6 +231,7 @@ class SessionManager {
       console.error('[SessionManager] Connection failed:', err);
       conversationState.setConnecting(false);
       this.teardownMediaOnly();
+      this.clearExpiryTimer();
       this.status = 'idle';
       this.session = null;
       this.sessionPromise = null;
@@ -170,6 +240,9 @@ class SessionManager {
         this.status = 'reconnecting';
         connectionRecovery.schedule(() => this.connect({ fromRecovery: true }));
       } else {
+        if (!this.intentionalClose) {
+          useUIStore.getState().setVoiceError('اتصال صوتی برقرار نشد. دکمه میکروفون رو دوباره بزن.');
+        }
         conversationState.setIdle();
       }
     }
@@ -244,6 +317,7 @@ class SessionManager {
     if (!scheduled) {
       this.status = 'idle';
       conversationState.setIdle();
+      useUIStore.getState().setVoiceError('اتصال قطع شد و تلاش مجدد جواب نداد. دکمه میکروفون رو دوباره بزن.');
       this.settleFuel();
     }
   }
@@ -271,6 +345,7 @@ class SessionManager {
     this.intentionalClose = true;
     this.connectGeneration += 1;
     connectionRecovery.reset();
+    this.clearExpiryTimer();
 
     this.settleFuel();
 

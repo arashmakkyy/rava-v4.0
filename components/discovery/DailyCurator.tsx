@@ -4,11 +4,10 @@ import { Sparkles, Loader2, Calendar, CheckCircle2 } from 'lucide-react';
 import { GlassCard } from '../core/GlassCard';
 import { useUserStore } from '../../store/useUserStore';
 import { useMapStore } from '../../store/useMapStore';
-import { GoogleGenAI, Type } from '@google/genai';
+import { aiProxyService } from '../../services/ai/aiProxyService';
 import { extractJSON } from '../../utils/jsonParser';
 import { TripEvent } from '../../types';
 import { GeoPoint } from '../../utils/geoPoint';
-import { APP_CONFIG } from '../../config';
 
 const motion = _motion as any;
 
@@ -35,31 +34,13 @@ export const DailyCurator: React.FC = () => {
     const geo = GeoPoint.fromArray(userLocation);
     const locString = geo ? `${geo.lat},${geo.lng}` : "Unknown Location";
 
-    const ai = new GoogleGenAI({ apiKey: APP_CONFIG.GOOGLE.GEMINI_API_KEY });
-    
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `به عنوان راوا، برای امروز من در ${cityMode} یک برنامه سفر باحال بچین.
-        موقعیت فعلی من: ${locString}
-        برنامه شامل: صبح، ناهار، عصر و شب.
-        خروجی فقط و فقط JSON باشد.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              morning: { type: Type.STRING },
-              lunch: { type: Type.STRING },
-              afternoon: { type: Type.STRING },
-              evening: { type: Type.STRING }
-            },
-            required: ['morning', 'lunch', 'afternoon', 'evening']
-          }
-        }
+      const text = await aiProxyService.dailyPlan({
+        city: cityMode || '',
+        location: locString,
       });
 
-      const data = extractJSON<AIPlan>(response.text || "{}");
+      const data = extractJSON<AIPlan>(text || "{}");
       setPlan(data);
     } catch (e) {
       console.error("AI Planning Error:", e);
