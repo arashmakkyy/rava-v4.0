@@ -111,3 +111,27 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.consume_live_mint(integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.consume_proxy_call(integer) TO authenticated;
+
+-- -------------------------------------------------------------------------------------
+-- Ticket processing receipts: duplicate/reprocessing policy for process-ticket.
+-- Same (user, image_path) reprocessed → the ORIGINAL trip is returned without a
+-- new Gemini call and without a new timeline row. Daily volume is bounded by
+-- counting receipts (no separate counter needed).
+-- -------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.ticket_receipts (
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  image_path TEXT NOT NULL,
+  trip_id UUID REFERENCES public.trips(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  PRIMARY KEY (user_id, image_path)
+);
+
+ALTER TABLE public.ticket_receipts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own ticket receipts" ON public.ticket_receipts;
+CREATE POLICY "Users can view own ticket receipts"
+  ON public.ticket_receipts FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_receipts_day
+  ON public.ticket_receipts (user_id, created_at DESC);

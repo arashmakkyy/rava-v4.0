@@ -7,9 +7,15 @@
 -- already allows this (is_verified OR own row); this RPC was stricter than the
 -- policy and hid own pending rows. Fixed here with explicit ownership +
 -- verification flags so the UI can render pending state distinctly.
--- =====================================================================================
+--
+-- NOTE: the input signature is unchanged, but the RETURNS TABLE gains two
+-- columns (is_verified, is_mine). PostgreSQL forbids changing a return shape
+-- via CREATE OR REPLACE, so the old function is dropped first. No DB object
+-- depends on it (only GRANTs, re-applied below, and the client call by name).
+-- -------------------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.get_nearby_footprints(float8, float8, float8);
 
-CREATE OR REPLACE FUNCTION public.get_nearby_footprints(
+CREATE FUNCTION public.get_nearby_footprints(
   px_lat float8,
   px_lng float8,
   px_radius float8 DEFAULT 2000

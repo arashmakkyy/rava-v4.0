@@ -47,12 +47,34 @@ REVOKE ALL ON FUNCTION public.admin_increment_wallet(uuid, numeric, integer, uui
 GRANT EXECUTE ON FUNCTION public.admin_increment_wallet(uuid, numeric, integer, uuid, text) TO service_role;
 
 -- -------------------------------------------------------------------------------------
--- 2. Extra uniqueness rail for price-verification rewards (defense in depth;
+-- 2. Extra uniqueness rails for price-verification rewards (defense in depth;
 --    the RPC below is already race-safe via the ledger PK on transaction_id).
 -- -------------------------------------------------------------------------------------
 CREATE UNIQUE INDEX IF NOT EXISTS uq_price_verification_reward
   ON public.reward_ledger (user_id, reward_type, reference_id)
   WHERE reward_type = 'price_verification_success';
+
+-- -------------------------------------------------------------------------------------
+-- 2b. Anti-farming rails for price reports (server-derived, never client-derived).
+--    Entitlement per (user, place, normalized item, server day); proof-hash
+--    dedup per user; item mandatory. Backfills keep the migration re-runnable.
+-- -------------------------------------------------------------------------------------
+ALTER TABLE public.price_reports ADD COLUMN IF NOT EXISTS report_date DATE DEFAULT CURRENT_DATE;
+ALTER TABLE public.price_reports ADD COLUMN IF NOT EXISTS proof_hash TEXT;
+
+UPDATE public.price_reports SET report_date = created_at::date WHERE report_date IS NULL;
+UPDATE public.price_reports SET item_name = '(unspecified)' WHERE item_name IS NULL OR btrim(item_name) = '';
+
+ALTER TABLE public.price_reports ALTER COLUMN item_name SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_price_report_entitlement
+  ON public.price_reports (user_id, place_id, lower(btrim(item_name)), report_date);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_price_proof_per_user
+  ON public.price_reports (user_id, proof_hash)
+  WHERE proof_hash IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_price_reports_status ON public.price_reports (ai_verification_status);
 
 -- -------------------------------------------------------------------------------------
 -- 3. Atomic finalize: verdict + reward in ONE transaction.
@@ -83,6 +105,12 @@ BEGIN
 
   IF v_row.ai_verification_status IS DISTINCT FROM 'pending' THEN
     RETURN jsonb_build_object('ok', true, 'idempotent', true, 'status', v_row.ai_verification_status);
+  END IF;
+
+  -- Server-derived entitlement date (never the client clock).
+  IF v_row.report_date IS NULL THEN
+    UPDATE price_reports SET report_date = CURRENT_DATE WHERE id = px_report_id;
+    v_row.report_date := CURRENT_DATE;
   END IF;
 
   IF px_verified IS TRUE THEN
