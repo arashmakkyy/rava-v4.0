@@ -9,6 +9,7 @@ import { footprintService } from '../../services/social/footprintService';
 import { selectPOI } from '../../services/poiSelectionService';
 import { cityPackService } from '../../services/cityPack';
 import { GeoPoint } from '../../utils/geoPoint';
+import { isValidLatLng } from '../../utils/geoUtils';
 import { Footprints as StepIcon, Star } from 'lucide-react';
 import { APP_CONFIG } from '../../config';
 import { MapControls } from './MapControls';
@@ -21,17 +22,21 @@ const CuratedMarker = React.memo(({ poi, onClick, isActive }: {
   onClick: (e: any) => void,
   isActive?: boolean,
 }) => {
+  // Library-sanctioned readiness: never mount a marker before the Map instance
+  // exists. Mounting against a failed/initializing map crashes marker.js
+  // ('get'/'getRootNode' of undefined) instead of skipping.
+  const map = useMap();
   const position = useMemo(() => {
     const lat = Number(poi.lat);
     const lng = Number(poi.lng);
     
-    if (isNaN(lat) || isNaN(lng)) return { lat: 0, lng: 0 };
+    if (!isValidLatLng(lat, lng)) return null;
     
     const geo = new GeoPoint(lat, lng);
     return geo.toGoogle();
   }, [poi.lat, poi.lng]);
   
-  if (position.lat === 0 && position.lng === 0) return null;
+  if (!map || !position) return null;
 
   return (
     <AdvancedMarker 
@@ -61,13 +66,18 @@ const FootprintMarker = React.memo(({ fp, onClick }: {
   fp: any,
   onClick?: () => void,
 }) => {
+  const map = useMap();
   const position = useMemo(() => {
     const lat = Number(fp.lat);
     const lng = Number(fp.lng);
+    if (!isValidLatLng(lat, lng)) return null;
     const geo = GeoPoint.fromArray([lat, lng]);
-    return geo?.toGoogle() || { lat: 0, lng: 0 };
+    return geo?.toGoogle() ?? null;
   }, [fp.lat, fp.lng]);
-  
+
+  // No fallback pin: invalid footprint coords render nothing, never (0,0).
+  if (!map || !position) return null;
+
   return (
     <AdvancedMarker 
       position={position}
@@ -330,22 +340,29 @@ export const MainMap: React.FC = () => {
             />
           ))}
 
-          {userGeo && (
-            <AdvancedMarker position={userGeo.toGoogle()}>
-               <div className="relative">
-                 <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-30" />
-                 <div className="relative w-5 h-5 bg-blue-500 rounded-full border-2 border-white shadow-xl flex items-center justify-center">
-                    <div className="w-1.5 h-1.5 bg-white rounded-full" />
-                 </div>
-               </div>
-            </AdvancedMarker>
-          )}
+          {userGeo && <UserLocationMarker location={userGeo} />}
 
           <MapControls />
         </GoogleMap>
         </MapErrorBoundary>
       </APIProvider>
     </div>
+  );
+};
+
+/** User pulse marker — only mounts on a ready map with valid coords. */
+const UserLocationMarker = ({ location }: { location: GeoPoint }) => {
+  const map = useMap();
+  if (!map || !isValidLatLng(location.lat, location.lng)) return null;
+  return (
+    <AdvancedMarker position={location.toGoogle()}>
+      <div className="relative">
+        <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-30" />
+        <div className="relative w-5 h-5 bg-blue-500 rounded-full border-2 border-white shadow-xl flex items-center justify-center">
+          <div className="w-1.5 h-1.5 bg-white rounded-full" />
+        </div>
+      </div>
+    </AdvancedMarker>
   );
 };
 

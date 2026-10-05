@@ -21,3 +21,18 @@ export const isWithinRadius = (lat1: number, lon1: number, lat2: number, lon2: n
   const distance = calculateDistance(lat1, lon1, lat2, lon2);
   return distance <= radiusMeters;
 };
+
+/**
+ * Strict coordinate validity for map markers.
+ * Rejects anything that is not a finite, in-range, non-null-island pair:
+ * undefined/null/''/NaN/±Infinity/out-of-range lat/lng, and (0,0).
+ * Markers must NEVER receive unvalidated data — AdvancedMarker throws
+ * (not skips) on bad positions and can take the whole map subtree down.
+ */
+export const isValidLatLng = (lat: unknown, lng: unknown): lat is number => {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false;
+  if (lat === 0 && lng === 0) return false;
+  return true;
+};
