@@ -13,6 +13,7 @@ export const useMapStore = create<MapState>((set) => ({
   poiError: null,
   locationPermissionDenied: false,
   mapsLoadError: null,
+  mapRuntime: 'loading',
 
   setUserLocation: (loc: [number, number]) =>
     set({ userLocation: loc, locationPermissionDenied: false }),
@@ -43,6 +44,7 @@ export const useMapStore = create<MapState>((set) => ({
   setPOIError: (msg: string | null) => set({ poiError: msg }),
   setLocationPermissionDenied: (val: boolean) => set({ locationPermissionDenied: val }),
   setMapsLoadError: (msg: string | null) => set({ mapsLoadError: msg }),
+  setMapRuntime: (mapRuntime) => set({ mapRuntime }),
   
   addFootprintOptimistic: (poiId: string, footprint: Footprint) => set((state) => {
     const matchesActive = state.activePOI?.id === poiId;

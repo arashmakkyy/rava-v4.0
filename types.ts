@@ -357,6 +357,13 @@ export interface UIState {
   setVoiceError: (msg: string | null) => void;
 }
 
+export type MapRuntimeState =
+  | 'loading'
+  | 'base-ready'
+  | 'advanced-markers-ready'
+  | 'auth-failed'
+  | 'load-failed';
+
 export interface MapState {
   userLocation: [number, number] | null;
   activePOI: POI | null;
@@ -370,6 +377,12 @@ export interface MapState {
   poiError: string | null;
   locationPermissionDenied: boolean;
   mapsLoadError: string | null;
+  /**
+   * Central map runtime gate. Markers mount ONLY on 'advanced-markers-ready'.
+   * 'auth-failed' comes from the official window.gm_authFailure callback
+   * (installed before the Maps script loads) — distinct from load errors.
+   */
+  mapRuntime: MapRuntimeState;
   
   setUserLocation: (loc: [number, number]) => void;
   setActivePOI: (poi: POI | null) => void;
@@ -381,6 +394,7 @@ export interface MapState {
   setPOIError: (msg: string | null) => void;
   setLocationPermissionDenied: (val: boolean) => void;
   setMapsLoadError: (msg: string | null) => void;
+  setMapRuntime: (state: MapRuntimeState) => void;
   addFootprintOptimistic: (poiId: string, footprint: Footprint) => void;
   clearActivePOI: () => void;
 }

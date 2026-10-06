@@ -1,4 +1,4 @@
-import { APIProvider, Map as GoogleMap, AdvancedMarker, useMap } from '@vis.gl/react-google-maps';
+import { APIProvider, Map as GoogleMap, useMap } from '@vis.gl/react-google-maps';
 import React, { useEffect, useCallback, useRef, useMemo } from 'react';
 import { useUserStore } from '../../store/useUserStore';
 import { useMapStore } from '../../store/useMapStore';
@@ -7,91 +7,19 @@ import { useRouteStore } from '../../store/useRouteStore';
 import { PlaceService } from '../../services/placeService';
 import { footprintService } from '../../services/social/footprintService';
 import { selectPOI } from '../../services/poiSelectionService';
+import { installMapsAuthFailureHandler } from '../../services/mapsAuth';
 import { cityPackService } from '../../services/cityPack';
 import { GeoPoint } from '../../utils/geoPoint';
-import { isValidLatLng } from '../../utils/geoUtils';
-import { Footprints as StepIcon, Star } from 'lucide-react';
 import { APP_CONFIG } from '../../config';
 import { MapControls } from './MapControls';
 import { MapErrorBoundary, MapFallback } from './MapErrorBoundary';
+import { MapReadinessController, MarkerLayer } from './MapRuntimeGate';
 
 declare const google: any;
 
-const CuratedMarker = React.memo(({ poi, onClick, isActive }: { 
-  poi: any, 
-  onClick: (e: any) => void,
-  isActive?: boolean,
-}) => {
-  // Library-sanctioned readiness: never mount a marker before the Map instance
-  // exists. Mounting against a failed/initializing map crashes marker.js
-  // ('get'/'getRootNode' of undefined) instead of skipping.
-  const map = useMap();
-  const position = useMemo(() => {
-    const lat = Number(poi.lat);
-    const lng = Number(poi.lng);
-    
-    if (!isValidLatLng(lat, lng)) return null;
-    
-    const geo = new GeoPoint(lat, lng);
-    return geo.toGoogle();
-  }, [poi.lat, poi.lng]);
-  
-  if (!map || !position) return null;
-
-  return (
-    <AdvancedMarker 
-      position={position} 
-      onClick={onClick}
-      zIndex={isActive ? 2000 : 1000}
-      anchorLeft="-50%"
-      anchorTop="-50%"
-    >
-      <div className={`relative cursor-pointer transition-transform active:scale-95 group ${isActive ? 'scale-125' : ''}`}>
-        <div className={`rounded-full border-2 border-rava-gold bg-white p-1 transition-transform group-hover:scale-110 ${
-          isActive ? 'shadow-[0_0_40px_rgba(234,179,8,0.9)] ring-2 ring-rava-gold/50' : 'shadow-[0_0_30px_rgba(234,179,8,0.6)]'
-        }`}>
-          <div className="rounded-full bg-rava-gold p-2">
-             <Star size={18} className="fill-current text-black" />
-          </div>
-        </div>
-        <div className="pointer-events-none absolute -bottom-8 start-1/2 z-[1000] hidden -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1 glass text-white [@media(hover:hover)]:group-hover:block">
-          <span className="text-rava-xs font-black">{poi.name}</span>
-        </div>
-      </div>
-    </AdvancedMarker>
-  );
-});
-
-const FootprintMarker = React.memo(({ fp, onClick }: { 
-  fp: any,
-  onClick?: () => void,
-}) => {
-  const map = useMap();
-  const position = useMemo(() => {
-    const lat = Number(fp.lat);
-    const lng = Number(fp.lng);
-    if (!isValidLatLng(lat, lng)) return null;
-    const geo = GeoPoint.fromArray([lat, lng]);
-    return geo?.toGoogle() ?? null;
-  }, [fp.lat, fp.lng]);
-
-  // No fallback pin: invalid footprint coords render nothing, never (0,0).
-  if (!map || !position) return null;
-
-  return (
-    <AdvancedMarker 
-      position={position}
-      zIndex={500}
-      onClick={onClick}
-    >
-      <div className={`relative transition-all cursor-pointer active:scale-90 ${fp.is_verified === false ? 'opacity-40 grayscale-[0.5]' : 'opacity-80'}`}>
-        <div className="bg-white/10 backdrop-blur-md p-2 rounded-full border border-white/20 shadow-xl">
-          <StepIcon size={14} className={fp.is_verified === false ? 'text-white' : 'text-rava-gold'} />
-        </div>
-      </div>
-    </AdvancedMarker>
-  );
-});
+// Official auth-failure callback must exist BEFORE the Maps script loads
+// (APIProvider injects it on mount). See services/mapsAuth.ts.
+installMapsAuthFailureHandler();
 
 const RoutePolyline = () => {
   const map = useMap();
@@ -245,14 +173,16 @@ const MAPS_JS_VERSION = 'quarterly';
 
 const handleMapsApiError = (error: unknown) => {
   console.error('[MainMap] Google Maps JavaScript API failed to load:', error);
-  useMapStore.getState().setMapsLoadError(
+  const store = useMapStore.getState();
+  store.setMapRuntime('load-failed');
+  store.setMapsLoadError(
     'نقشه لود نشد. اتصال اینترنت و کلید Google Maps را بررسی کن.'
   );
 };
 
 export const MainMap: React.FC = () => {
   const { curatedPlaces, showCurated } = useDiscoveryStore();
-  const { nearbyFootprints, pendingFootprints, userLocation, activePOI, fullDetailPOI, mapsLoadError } = useMapStore();
+  const { nearbyFootprints, pendingFootprints, userLocation, activePOI, fullDetailPOI, mapsLoadError, mapRuntime } = useMapStore();
   const activeId = fullDetailPOI?.id || activePOI?.id;
 
   const visibleCurated = useMemo(() => {
@@ -277,8 +207,6 @@ export const MainMap: React.FC = () => {
       { source: 'footprint', fetchEssentials: !!fp.place_id },
     );
   }, []);
-
-  const userGeo = useMemo(() => GeoPoint.fromArray(userLocation), [userLocation]);
 
   // No API key at all: don't even boot the provider (it would only throw).
   // The rest of the app (tabs, sheets, tools) keeps working on the fallback.
@@ -314,55 +242,37 @@ export const MainMap: React.FC = () => {
             defaultZoom={13}
             mapId={APP_CONFIG.GOOGLE.MAPS_MAP_ID}
             disableDefaultUI={true}
-          clickableIcons={true}
-          className="w-full h-full"
-          gestureHandling={'greedy'}
-          colorScheme="DARK"
-        >
-          <MapController />
-          <RoutePolyline />
-          <MapPanOnSelect />
-          
-          {visibleCurated.map(poi => (
-            <CuratedMarker 
-              key={poi.id} 
-              poi={poi} 
-              isActive={activeId === poi.id}
-              onClick={() => handleCuratedClick(poi)} 
-            />
-          ))}
+            clickableIcons={true}
+            className="w-full h-full"
+            gestureHandling={'greedy'}
+            colorScheme="DARK"
+          >
+            <MapController />
+            <MapReadinessController />
+            <RoutePolyline />
+            <MapPanOnSelect />
 
-          {[...nearbyFootprints, ...(pendingFootprints || [])].map(fp => (
-            <FootprintMarker 
-              key={fp.id} 
-              fp={fp}
-              onClick={() => handleFootprintClick(fp)}
-            />
-          ))}
+            {/*
+              Marker layer mounts ONLY on 'advanced-markers-ready':
+              map exists + auth OK + getMapCapabilities confirms it.
+              Mounting earlier crashes marker.js on unhealthy maps.
+            */}
+            {mapRuntime === 'advanced-markers-ready' && (
+              <MarkerLayer
+                pois={visibleCurated}
+                footprints={[...nearbyFootprints, ...(pendingFootprints || [])]}
+                userLocation={userLocation}
+                activeId={activeId}
+                onCuratedClick={handleCuratedClick}
+                onFootprintClick={handleFootprintClick}
+              />
+            )}
 
-          {userGeo && <UserLocationMarker location={userGeo} />}
-
-          <MapControls />
-        </GoogleMap>
+            <MapControls />
+          </GoogleMap>
         </MapErrorBoundary>
       </APIProvider>
     </div>
-  );
-};
-
-/** User pulse marker — only mounts on a ready map with valid coords. */
-const UserLocationMarker = ({ location }: { location: GeoPoint }) => {
-  const map = useMap();
-  if (!map || !isValidLatLng(location.lat, location.lng)) return null;
-  return (
-    <AdvancedMarker position={location.toGoogle()}>
-      <div className="relative">
-        <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-30" />
-        <div className="relative w-5 h-5 bg-blue-500 rounded-full border-2 border-white shadow-xl flex items-center justify-center">
-          <div className="w-1.5 h-1.5 bg-white rounded-full" />
-        </div>
-      </div>
-    </AdvancedMarker>
   );
 };
 
